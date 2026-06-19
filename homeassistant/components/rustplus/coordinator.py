@@ -22,7 +22,7 @@ class RustPlusDataCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=30),
+            update_interval=timedelta(seconds=60), # Set to 60s for server info polling
         )
 
     async def _async_update_data(self):
@@ -32,6 +32,14 @@ class RustPlusDataCoordinator(DataUpdateCoordinator):
             await self.socket.connect()
             info = await self.socket.get_info()
             time = await self.socket.get_time()
-            return {"info": info, "time": time}
+
+            # Get Team Info
+            try:
+                team_info = await self.socket.get_team_info()
+            except Exception as e:
+                _LOGGER.debug("Failed to get team info (possibly not in a team): %s", e)
+                team_info = None
+
+            return {"info": info, "time": time, "team_info": team_info}
         except Exception as err:
             raise UpdateFailed(f"Error communicating with Rust+: {err}") from err

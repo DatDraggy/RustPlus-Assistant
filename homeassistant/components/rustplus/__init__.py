@@ -16,7 +16,7 @@ from .fcm_manager import RustPlusFCMManager
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[str] = ["switch", "sensor", "binary_sensor"]
+PLATFORMS: list[str] = ["switch", "sensor", "binary_sensor", "camera"]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Rust+ from a config entry."""
