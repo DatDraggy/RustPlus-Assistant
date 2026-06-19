@@ -1,0 +1,42 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Enter your Rust+ Server and Player details.",
+        "data": {
+          "fcm_credentials": "FCM Credentials (JSON string)",
+          "server_ip": "Server IP Address",
+          "server_port": "Server Port",
+          "player_id": "Steam ID",
+          "player_token": "Player Token"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid authentication",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "Device is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "description": "Add discovered devices using the format 'ENTITY_ID:NAME', separated by commas. (e.g. '12345:Main Switch, 67890:Lights')",
+        "data": {
+          "add_switches": "Add Smart Switches",
+          "add_monitors": "Add Storage Monitors",
+          "add_alarms": "Add Smart Alarms"
+        }
+      }
+    }
+  },
+  "issues": {
+    "device_paired": {
+      "title": "Rust+ Device Paired: {name}",
+      "description": "A new {type} ({name}, ID: {id}) was paired via the Rust+ app. You can now add it to your configuration if desired using the integration's Options flow."
+    }
+  }
+}
