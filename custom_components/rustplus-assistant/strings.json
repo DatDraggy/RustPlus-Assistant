@@ -37,6 +37,10 @@
     "device_paired": {
       "title": "Rust+ Device Paired: {name}",
       "description": "A new {type} ({name}, ID: {id}) was paired via the Rust+ app. You can now add it to your configuration if desired using the integration's Options flow."
+    },
+    "rename_device": {
+      "title": "Action Required: Rename {name}",
+      "description": "You successfully paired the {type} **{name}** (ID: {id}).\n\nBy default, Facepunch only provides generic names like 'Smart Alarm' during pairing.\n\n**Please go to your Home Assistant Devices dashboard, click on this newly paired entity, and rename it to a friendly name (like 'Front Door Alarm') so you can easily identify it!**"
     }
   }
 }
