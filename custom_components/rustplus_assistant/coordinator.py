@@ -5,6 +5,7 @@ import asyncio
 import logging
 from datetime import timedelta
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from rustplus import RustSocket, ServerDetails
@@ -16,7 +17,7 @@ _LOGGER = logging.getLogger(__name__)
 class RustPlusDataCoordinator(DataUpdateCoordinator):
     """Class to manage fetching Rust+ data."""
 
-    def __init__(self, hass: HomeAssistant, socket: RustSocket) -> None:
+    def __init__(self, hass: HomeAssistant, socket: RustSocket, config_entry: ConfigEntry) -> None:
         """Initialize."""
         self.socket = socket
         super().__init__(
@@ -24,6 +25,7 @@ class RustPlusDataCoordinator(DataUpdateCoordinator):
             _LOGGER,
             name=DOMAIN,
             update_interval=timedelta(seconds=60), # Set to 60s for server info polling
+            config_entry=config_entry,
         )
         self.api_lock = asyncio.Lock()
         self.entities_to_poll = set()

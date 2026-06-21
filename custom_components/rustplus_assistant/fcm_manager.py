@@ -9,6 +9,7 @@ from datetime import timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
 
@@ -149,7 +150,14 @@ class RustPlusFCMManager:
             except Exception:
                 pass
                 
-        _LOGGER.warning("Received FCM data message: %s", data_message)
+        # NOTE: data_message can carry the server's playerToken/playerId in its
+        # "body" field during pairing. Never log it verbatim — log only
+        # non-sensitive routing metadata, and only at debug level.
+        _LOGGER.debug(
+            "Received FCM notification (channel=%s, title=%s)",
+            data_message.get("channelId"),
+            data_message.get("title"),
+        )
 
         title = data_message.get("title") or (notification.get("title", "") if isinstance(notification, dict) else "")
         message = data_message.get("message") or (notification.get("body", "") if isinstance(notification, dict) else "")
@@ -203,7 +211,7 @@ class RustPlusFCMManager:
                 self.hass.async_create_task(self._async_auto_discover_device(entity_id, entity_type, entity_name))
 
         else:
-            _LOGGER.warning("Rust+ Notification Event Fired: %s - %s", title, message)
+            _LOGGER.debug("Rust+ Notification Event Fired: %s - %s", title, message)
             
             event_data = {
                 "title": title,
@@ -222,14 +230,39 @@ class RustPlusFCMManager:
                         
                     # If this is an alarm, tell all binary sensors for this server to poll instantly
                     if channel_id == "alarm" and "ip" in b_data:
-                        from homeassistant.helpers.dispatcher import async_dispatcher_send
-                        
-                        entity_id = data_message.get("entityId")
-                        if not entity_id and isinstance(notification, dict):
-                            entity_id = notification.get("entityId")
-                            
-                        _LOGGER.warning("Dispatching alarm refresh for IP %s with title %s and entity_id %s", b_data['ip'], title, entity_id)
-                        async_dispatcher_send(self.hass, f"rustplus_alarm_refresh_{b_data['ip']}", title, message, entity_id)
+                        # --- TEMPORARY DIAGNOSTIC -----------------------------------
+                        # Confirm whether Facepunch's alarm push actually carries the
+                        # alarm's entityId (and where), so we can later target the one
+                        # alarm that fired instead of broadcasting to all of them.
+                        # Logged at INFO so it is visible without enabling debug; keys
+                        # only, no secrets. Remove once the thesis is confirmed.
+                        entity_id_from_data = data_message.get("entityId")
+                        entity_id_from_notif = (
+                            notification.get("entityId") if isinstance(notification, dict) else None
+                        )
+                        entity_id_from_body = b_data.get("entityId")
+                        _LOGGER.info(
+                            "RUSTPLUS ALARM entityId DIAGNOSTIC: "
+                            "data_message keys=%s | notification keys=%s | body keys=%s | "
+                            "entityId(data=%s, notification=%s, body=%s)",
+                            sorted(data_message.keys()),
+                            sorted(notification.keys()) if isinstance(notification, dict) else type(notification).__name__,
+                            sorted(b_data.keys()),
+                            entity_id_from_data,
+                            entity_id_from_notif,
+                            entity_id_from_body,
+                        )
+                        # -----------------------------------------------------------
+
+                        entity_id = entity_id_from_data or entity_id_from_notif or entity_id_from_body
+
+                        _LOGGER.debug(
+                            "Dispatching alarm refresh for IP %s (title=%s, entity_id=%s)",
+                            b_data['ip'], title, entity_id,
+                        )
+                        async_dispatcher_send(
+                            self.hass, f"rustplus_alarm_refresh_{b_data['ip']}", title, message, entity_id
+                        )
                 except Exception as e:
                     _LOGGER.error("Error processing FCM body: %s", e)
 
@@ -253,9 +286,12 @@ class RustPlusFCMManager:
             data = self.hass.data[DOMAIN].get(entry.entry_id)
             if data and data.get("type") == "server":
                 socket = data.get("socket")
-                if socket:
+                coordinator = data.get("coordinator")
+                if socket and coordinator:
                     try:
-                        info = await socket.get_entity_info(int(entity_id))
+                        # Serialize with the coordinator's polling on the shared websocket.
+                        async with coordinator.api_lock:
+                            info = await socket.get_entity_info(int(entity_id))
                         if type(info).__name__ == "RustError":
                             _LOGGER.warning(
                                 "Entity %s not found on server entry '%s' (RustError: %s). "

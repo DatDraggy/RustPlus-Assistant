@@ -74,7 +74,7 @@ class TestRustPlusEntity:
 
     def test_unique_id_format(self):
         """unique_id should be {ip}_{port}_{entity_id}."""
-        from custom_components.rustplus.entity import RustPlusEntity
+        from custom_components.rustplus_assistant.entity import RustPlusEntity
 
         coord = _make_coordinator()
         entity = RustPlusEntity(coord, 12345, "switch", "My Switch")
@@ -86,21 +86,21 @@ class TestRustPlusEntity:
 
     def test_device_info_structure(self):
         """Device info should have the correct identifiers and via_device."""
-        from custom_components.rustplus.entity import RustPlusEntity
+        from custom_components.rustplus_assistant.entity import RustPlusEntity
 
         coord = _make_coordinator()
         entity = RustPlusEntity(coord, 99999, "smart_alarm", "Raid Alarm")
 
         di = entity._attr_device_info
-        assert ("rustplus", "192.168.1.100_28015_99999") in di["identifiers"]
+        assert ("rustplus_assistant", "192.168.1.100_28015_99999") in di["identifiers"]
         assert di["name"] == "Raid Alarm"
         assert di["manufacturer"] == "Facepunch"
         assert di["model"] == "Smart_alarm"
-        assert di["via_device"] == ("rustplus", "192.168.1.100_28015")
+        assert di["via_device"] == ("rustplus_assistant", "192.168.1.100_28015")
 
     def test_different_servers_produce_different_ids(self):
         """Two entities with the same in-game ID on different servers should have different unique_ids."""
-        from custom_components.rustplus.entity import RustPlusEntity
+        from custom_components.rustplus_assistant.entity import RustPlusEntity
 
         coord_a = _make_coordinator(server_details=_make_server_details("10.0.0.1", 28015))
         coord_b = _make_coordinator(server_details=_make_server_details("10.0.0.2", 28015))
@@ -120,7 +120,7 @@ class TestStorageMonitor:
 
     def test_item_count(self):
         """native_value should be the number of items in the TC."""
-        from custom_components.rustplus.sensor import RustPlusStorageMonitor
+        from custom_components.rustplus_assistant.sensor import RustPlusStorageMonitor
 
         coord = _make_coordinator()
         monitor = RustPlusStorageMonitor(coord, 5011, "TC")
@@ -133,7 +133,7 @@ class TestStorageMonitor:
 
     def test_empty_tc(self):
         """An empty TC should report 0 items."""
-        from custom_components.rustplus.sensor import RustPlusStorageMonitor
+        from custom_components.rustplus_assistant.sensor import RustPlusStorageMonitor
 
         coord = _make_coordinator()
         monitor = RustPlusStorageMonitor(coord, 5011, "TC")
@@ -142,10 +142,10 @@ class TestStorageMonitor:
         monitor._update_state_from_info(info)
         assert monitor._attr_native_value == 0
 
-    @patch("custom_components.rustplus.sensor.translate_id_to_stack")
+    @patch("custom_components.rustplus_assistant.sensor.translate_id_to_stack")
     def test_material_counts_in_attributes(self, mock_translate):
         """Extra state attributes should contain per-item counts."""
-        from custom_components.rustplus.sensor import RustPlusStorageMonitor
+        from custom_components.rustplus_assistant.sensor import RustPlusStorageMonitor
 
         mock_translate.side_effect = lambda item_id: {
             100: "Wood", 101: "Stones", 102: "Metal Fragments"
@@ -168,10 +168,10 @@ class TestStorageMonitor:
         assert attrs["Stones"] == 2000
         assert attrs["Metal Fragments"] == 750
 
-    @patch("custom_components.rustplus.sensor.translate_id_to_stack")
+    @patch("custom_components.rustplus_assistant.sensor.translate_id_to_stack")
     def test_upkeep_duration_attribute(self, mock_translate):
         """Upkeep Duration should be calculated from protection_expiry."""
-        from custom_components.rustplus.sensor import RustPlusStorageMonitor
+        from custom_components.rustplus_assistant.sensor import RustPlusStorageMonitor
 
         mock_translate.return_value = "Wood"
 
@@ -191,10 +191,10 @@ class TestStorageMonitor:
         # Should be approximately 1 hour (could be 59:59 due to timing)
         assert "0:59:" in attrs["Upkeep Duration"] or "1:00:00" == attrs["Upkeep Duration"]
 
-    @patch("custom_components.rustplus.sensor.translate_id_to_stack")
+    @patch("custom_components.rustplus_assistant.sensor.translate_id_to_stack")
     def test_upkeep_expired(self, mock_translate):
         """Upkeep Duration should be 0:00:00 if protection has expired."""
-        from custom_components.rustplus.sensor import RustPlusStorageMonitor
+        from custom_components.rustplus_assistant.sensor import RustPlusStorageMonitor
 
         mock_translate.return_value = "Wood"
 
@@ -214,7 +214,7 @@ class TestStorageMonitor:
 
     def test_registers_for_polling(self):
         """Storage monitor should add itself to coordinator.entities_to_poll."""
-        from custom_components.rustplus.sensor import RustPlusStorageMonitor
+        from custom_components.rustplus_assistant.sensor import RustPlusStorageMonitor
 
         coord = _make_coordinator()
         assert len(coord.entities_to_poll) == 0
@@ -228,7 +228,7 @@ class TestTCMaterialSensor:
 
     def test_unique_id_suffix(self):
         """Material sensors should append the material name to the unique_id."""
-        from custom_components.rustplus.sensor import RustPlusTCMaterialSensor
+        from custom_components.rustplus_assistant.sensor import RustPlusTCMaterialSensor
 
         coord = _make_coordinator()
         sensor = RustPlusTCMaterialSensor(coord, 5011, "TC", "Wood")
@@ -237,17 +237,17 @@ class TestTCMaterialSensor:
 
     def test_unique_id_suffix_hqm(self):
         """HQM sensor should have a clean suffix."""
-        from custom_components.rustplus.sensor import RustPlusTCMaterialSensor
+        from custom_components.rustplus_assistant.sensor import RustPlusTCMaterialSensor
 
         coord = _make_coordinator()
         sensor = RustPlusTCMaterialSensor(coord, 5011, "TC", "High Quality Metal")
 
         assert sensor._attr_unique_id.endswith("_high_quality_metal")
 
-    @patch("custom_components.rustplus.sensor.translate_id_to_stack")
+    @patch("custom_components.rustplus_assistant.sensor.translate_id_to_stack")
     def test_reads_from_coordinator_data(self, mock_translate):
         """native_value should sum quantities matching this material from coordinator data."""
-        from custom_components.rustplus.sensor import RustPlusTCMaterialSensor
+        from custom_components.rustplus_assistant.sensor import RustPlusTCMaterialSensor
 
         mock_translate.side_effect = lambda item_id: {
             100: "Wood", 101: "Stones"
@@ -261,10 +261,10 @@ class TestTCMaterialSensor:
 
         assert sensor.native_value == 1500
 
-    @patch("custom_components.rustplus.sensor.translate_id_to_stack")
+    @patch("custom_components.rustplus_assistant.sensor.translate_id_to_stack")
     def test_returns_zero_when_material_absent(self, mock_translate):
         """Returns 0 when the material is not in the TC."""
-        from custom_components.rustplus.sensor import RustPlusTCMaterialSensor
+        from custom_components.rustplus_assistant.sensor import RustPlusTCMaterialSensor
 
         mock_translate.return_value = "Stones"
 
@@ -282,7 +282,7 @@ class TestTCUpkeepSensor:
 
     def test_unique_id_suffix(self):
         """Upkeep sensor should append _upkeep to the unique_id."""
-        from custom_components.rustplus.sensor import RustPlusTCUpkeepSensor
+        from custom_components.rustplus_assistant.sensor import RustPlusTCUpkeepSensor
 
         coord = _make_coordinator()
         sensor = RustPlusTCUpkeepSensor(coord, 5011, "TC")
@@ -291,7 +291,7 @@ class TestTCUpkeepSensor:
 
     def test_returns_unknown_without_data(self):
         """Returns 'Unknown' when no entity data exists."""
-        from custom_components.rustplus.sensor import RustPlusTCUpkeepSensor
+        from custom_components.rustplus_assistant.sensor import RustPlusTCUpkeepSensor
 
         coord = _make_coordinator()
         sensor = RustPlusTCUpkeepSensor(coord, 5011, "TC")
@@ -301,7 +301,7 @@ class TestTCUpkeepSensor:
 
     def test_returns_duration_string(self):
         """Returns a human-readable duration string."""
-        from custom_components.rustplus.sensor import RustPlusTCUpkeepSensor
+        from custom_components.rustplus_assistant.sensor import RustPlusTCUpkeepSensor
 
         coord = _make_coordinator()
         sensor = RustPlusTCUpkeepSensor(coord, 5011, "TC")
@@ -322,7 +322,7 @@ class TestServerSensor:
 
     def test_unique_id_format(self):
         """Unique ID should include the sensor type."""
-        from custom_components.rustplus.sensor import RustPlusServerSensor
+        from custom_components.rustplus_assistant.sensor import RustPlusServerSensor
 
         coord = _make_coordinator()
         sensor = RustPlusServerSensor(coord, "players", "Players Online")
@@ -332,7 +332,7 @@ class TestServerSensor:
 
     def test_returns_none_without_data(self):
         """Returns None when coordinator has no data."""
-        from custom_components.rustplus.sensor import RustPlusServerSensor
+        from custom_components.rustplus_assistant.sensor import RustPlusServerSensor
 
         coord = _make_coordinator()
         coord.data = None
@@ -342,7 +342,7 @@ class TestServerSensor:
 
     def test_returns_player_count(self):
         """Returns the player count from server info."""
-        from custom_components.rustplus.sensor import RustPlusServerSensor
+        from custom_components.rustplus_assistant.sensor import RustPlusServerSensor
 
         coord = _make_coordinator()
         info = SimpleNamespace(players=42, queued_players=5, max_players=100)
@@ -357,7 +357,7 @@ class TestTeamSensor:
 
     def test_returns_zero_without_team(self):
         """Returns 0 when not in a team."""
-        from custom_components.rustplus.sensor import RustPlusTeamSensor
+        from custom_components.rustplus_assistant.sensor import RustPlusTeamSensor
 
         coord = _make_coordinator()
         coord.data = {"team_info": None}
@@ -367,7 +367,7 @@ class TestTeamSensor:
 
     def test_returns_member_count(self):
         """Returns the number of team members."""
-        from custom_components.rustplus.sensor import RustPlusTeamSensor
+        from custom_components.rustplus_assistant.sensor import RustPlusTeamSensor
 
         coord = _make_coordinator()
         team_info = SimpleNamespace(members=[1, 2, 3])
@@ -386,7 +386,7 @@ class TestSmartAlarm:
 
     def test_init_state(self):
         """Smart alarm should initialize as OFF."""
-        from custom_components.rustplus.binary_sensor import RustPlusSmartAlarm
+        from custom_components.rustplus_assistant.binary_sensor import RustPlusSmartAlarm
 
         coord = _make_coordinator()
         alarm = RustPlusSmartAlarm(coord, 8408, "Smart Alarm (8408)")
@@ -397,7 +397,7 @@ class TestSmartAlarm:
     @pytest.mark.asyncio
     async def test_force_refresh_activates_on_value_true(self):
         """When the server reports value=True, the alarm should activate."""
-        from custom_components.rustplus.binary_sensor import RustPlusSmartAlarm
+        from custom_components.rustplus_assistant.binary_sensor import RustPlusSmartAlarm
 
         hass = _make_hass()
         coord = _make_coordinator(hass=hass)
@@ -415,7 +415,7 @@ class TestSmartAlarm:
     @pytest.mark.asyncio
     async def test_force_refresh_ignores_value_false(self):
         """When the server reports value=False, the alarm should NOT activate."""
-        from custom_components.rustplus.binary_sensor import RustPlusSmartAlarm
+        from custom_components.rustplus_assistant.binary_sensor import RustPlusSmartAlarm
 
         hass = _make_hass()
         coord = _make_coordinator(hass=hass)
@@ -433,7 +433,7 @@ class TestSmartAlarm:
     @pytest.mark.asyncio
     async def test_force_refresh_handles_api_error(self):
         """Should not crash if the API call fails."""
-        from custom_components.rustplus.binary_sensor import RustPlusSmartAlarm
+        from custom_components.rustplus_assistant.binary_sensor import RustPlusSmartAlarm
 
         hass = _make_hass()
         coord = _make_coordinator(hass=hass)
@@ -457,7 +457,7 @@ class TestSmartSwitch:
 
     def test_init_state(self):
         """Smart switch should initialize as OFF."""
-        from custom_components.rustplus.switch import RustPlusSmartSwitch
+        from custom_components.rustplus_assistant.switch import RustPlusSmartSwitch
 
         coord = _make_coordinator()
         switch = RustPlusSmartSwitch(coord, 8568, "Smart Switch (8568)")
@@ -467,7 +467,7 @@ class TestSmartSwitch:
     @pytest.mark.asyncio
     async def test_turn_on(self):
         """Turning on should call set_entity_value(eid, True)."""
-        from custom_components.rustplus.switch import RustPlusSmartSwitch
+        from custom_components.rustplus_assistant.switch import RustPlusSmartSwitch
 
         coord = _make_coordinator()
         coord.socket.set_entity_value = AsyncMock()
@@ -483,7 +483,7 @@ class TestSmartSwitch:
     @pytest.mark.asyncio
     async def test_turn_off(self):
         """Turning off should call set_entity_value(eid, False)."""
-        from custom_components.rustplus.switch import RustPlusSmartSwitch
+        from custom_components.rustplus_assistant.switch import RustPlusSmartSwitch
 
         coord = _make_coordinator()
         coord.socket.set_entity_value = AsyncMock()
@@ -500,7 +500,7 @@ class TestSmartSwitch:
     @pytest.mark.asyncio
     async def test_handle_event_updates_state(self):
         """Websocket event should update the switch state."""
-        from custom_components.rustplus.switch import RustPlusSmartSwitch
+        from custom_components.rustplus_assistant.switch import RustPlusSmartSwitch
 
         coord = _make_coordinator()
         switch = RustPlusSmartSwitch(coord, 8568, "Smart Switch (8568)")
@@ -524,8 +524,8 @@ class TestFCMManager:
         """Create an FCM manager with mocked credentials."""
         hass = hass or _make_hass()
         creds = json.dumps({"fcm_credentials": {"keys": {"p256dh": "test", "auth": "test"}}})
-        with patch("custom_components.rustplus.fcm_manager.FCMListener"):
-            from custom_components.rustplus.fcm_manager import RustPlusFCMManager
+        with patch("custom_components.rustplus_assistant.fcm_manager.FCMListener"):
+            from custom_components.rustplus_assistant.fcm_manager import RustPlusFCMManager
             manager = RustPlusFCMManager(hass, creds)
         return manager, hass
 
@@ -568,7 +568,7 @@ class TestFCMManager:
         }
         notification = {}
 
-        with patch("custom_components.rustplus.fcm_manager.async_dispatcher_send") as mock_dispatch:
+        with patch("custom_components.rustplus_assistant.fcm_manager.async_dispatcher_send") as mock_dispatch:
             manager._handle_notification_threadsafe(notification, data_message)
             mock_dispatch.assert_called_once()
             call_args = mock_dispatch.call_args
@@ -613,8 +613,8 @@ class TestFCMManager:
     def test_invalid_fcm_credentials(self):
         """Invalid JSON credentials should not crash the manager."""
         hass = _make_hass()
-        with patch("custom_components.rustplus.fcm_manager.FCMListener"):
-            from custom_components.rustplus.fcm_manager import RustPlusFCMManager
+        with patch("custom_components.rustplus_assistant.fcm_manager.FCMListener"):
+            from custom_components.rustplus_assistant.fcm_manager import RustPlusFCMManager
             # Should not raise
             manager = RustPlusFCMManager(hass, "not-valid-json{{{")
 
@@ -650,7 +650,7 @@ class TestConfigFlow:
     @pytest.mark.asyncio
     async def test_validate_input_valid_json(self):
         """Valid JSON should pass validation."""
-        from custom_components.rustplus.config_flow import validate_input
+        from custom_components.rustplus_assistant.config_flow import validate_input
 
         hass = _make_hass()
         data = {"fcm_credentials": json.dumps({"keys": {"auth": "test"}})}
@@ -660,7 +660,7 @@ class TestConfigFlow:
     @pytest.mark.asyncio
     async def test_validate_input_invalid_json(self):
         """Invalid JSON should raise InvalidAuth."""
-        from custom_components.rustplus.config_flow import validate_input, InvalidAuth
+        from custom_components.rustplus_assistant.config_flow import validate_input, InvalidAuth
 
         hass = _make_hass()
         data = {"fcm_credentials": "not-valid-json"}
@@ -730,11 +730,11 @@ class TestPlatformSetup:
     @pytest.mark.asyncio
     async def test_sensor_setup_creates_server_sensors(self):
         """Sensor setup should always create Players Online, Players Queued, Max Players, and Team Size."""
-        from custom_components.rustplus.sensor import async_setup_entry
+        from custom_components.rustplus_assistant.sensor import async_setup_entry
 
         hass = _make_hass()
         coord = _make_coordinator()
-        hass.data = {"rustplus": {"test_entry": {"coordinator": coord}}}
+        hass.data = {"rustplus_assistant": {"test_entry": {"coordinator": coord}}}
 
         entry = MagicMock()
         entry.entry_id = "test_entry"
@@ -756,11 +756,11 @@ class TestPlatformSetup:
     @pytest.mark.asyncio
     async def test_sensor_setup_creates_storage_monitor_sub_sensors(self):
         """Adding a storage monitor should create 1 main + 4 materials + 1 upkeep = 6 extra sensors."""
-        from custom_components.rustplus.sensor import async_setup_entry
+        from custom_components.rustplus_assistant.sensor import async_setup_entry
 
         hass = _make_hass()
         coord = _make_coordinator()
-        hass.data = {"rustplus": {"test_entry": {"coordinator": coord}}}
+        hass.data = {"rustplus_assistant": {"test_entry": {"coordinator": coord}}}
 
         entry = MagicMock()
         entry.entry_id = "test_entry"
@@ -777,11 +777,11 @@ class TestPlatformSetup:
     @pytest.mark.asyncio
     async def test_binary_sensor_setup_creates_alarms(self):
         """Binary sensor setup should create an entity per paired alarm."""
-        from custom_components.rustplus.binary_sensor import async_setup_entry
+        from custom_components.rustplus_assistant.binary_sensor import async_setup_entry
 
         hass = _make_hass()
         coord = _make_coordinator()
-        hass.data = {"rustplus": {"test_entry": {"coordinator": coord}}}
+        hass.data = {"rustplus_assistant": {"test_entry": {"coordinator": coord}}}
 
         entry = MagicMock()
         entry.entry_id = "test_entry"
@@ -804,12 +804,12 @@ class TestPlatformSetup:
     @pytest.mark.asyncio
     async def test_switch_setup_creates_switches(self):
         """Switch setup should create an entity per paired switch."""
-        from custom_components.rustplus.switch import async_setup_entry
+        from custom_components.rustplus_assistant.switch import async_setup_entry
 
         hass = _make_hass()
         coord = _make_coordinator()
         coord.socket.get_entity_info = AsyncMock(side_effect=Exception("No ID provided"))
-        hass.data = {"rustplus": {"test_entry": {"coordinator": coord, "socket": coord.socket}}}
+        hass.data = {"rustplus_assistant": {"test_entry": {"coordinator": coord, "socket": coord.socket}}}
 
         entry = MagicMock()
         entry.entry_id = "test_entry"
@@ -824,3 +824,84 @@ class TestPlatformSetup:
 
         assert len(added) == 1
         assert added[0].rust_entity_id == 854388568
+
+
+# ---------------------------------------------------------------------------
+# Smart Alarm Event Tests (prototype event platform)
+# ---------------------------------------------------------------------------
+
+class TestSmartAlarmEvent:
+    """Tests for event.py — the prototype event-entity model for Smart Alarms."""
+
+    def test_unique_id_has_event_suffix(self):
+        """Event entity gets an _event suffix so it can coexist with the binary_sensor."""
+        from custom_components.rustplus_assistant.event import RustPlusSmartAlarmEvent
+
+        coord = _make_coordinator()
+        ev = RustPlusSmartAlarmEvent(coord, 8408, "Smart Alarm (8408)")
+
+        assert ev._attr_unique_id == "192.168.1.100_28015_8408_event"
+        assert ev._attr_event_types == ["triggered"]
+
+    def test_broadcast_fires_when_no_entity_id(self):
+        """With no entity_id in the push, the alarm fires (today's broadcast behaviour)."""
+        from custom_components.rustplus_assistant.event import RustPlusSmartAlarmEvent
+
+        coord = _make_coordinator()
+        ev = RustPlusSmartAlarmEvent(coord, 8408, "Smart Alarm (8408)")
+        ev._trigger_event = MagicMock()
+        ev.async_write_ha_state = MagicMock()
+
+        ev._handle_alarm("Explosion!", "Under attack!", None)
+
+        ev._trigger_event.assert_called_once()
+        assert ev._trigger_event.call_args[0][0] == "triggered"
+        ev.async_write_ha_state.assert_called_once()
+
+    def test_fires_when_entity_id_matches(self):
+        """When the push targets this alarm's id, it fires."""
+        from custom_components.rustplus_assistant.event import RustPlusSmartAlarmEvent
+
+        coord = _make_coordinator()
+        ev = RustPlusSmartAlarmEvent(coord, 8408, "Smart Alarm (8408)")
+        ev._trigger_event = MagicMock()
+        ev.async_write_ha_state = MagicMock()
+
+        ev._handle_alarm("Explosion!", "Under attack!", "8408")
+
+        ev._trigger_event.assert_called_once()
+
+    def test_ignored_when_entity_id_is_a_different_alarm(self):
+        """When the push targets a different alarm, this entity stays silent."""
+        from custom_components.rustplus_assistant.event import RustPlusSmartAlarmEvent
+
+        coord = _make_coordinator()
+        ev = RustPlusSmartAlarmEvent(coord, 8408, "Smart Alarm (8408)")
+        ev._trigger_event = MagicMock()
+        ev.async_write_ha_state = MagicMock()
+
+        ev._handle_alarm("Explosion!", "Under attack!", "9999")
+
+        ev._trigger_event.assert_not_called()
+        ev.async_write_ha_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_setup_creates_event_per_alarm(self):
+        """Event setup should create one event entity per paired alarm."""
+        from custom_components.rustplus_assistant.event import async_setup_entry
+
+        hass = _make_hass()
+        coord = _make_coordinator()
+        hass.data = {"rustplus_assistant": {"test_entry": {"coordinator": coord}}}
+
+        entry = MagicMock()
+        entry.entry_id = "test_entry"
+        entry.options = {"smart_alarms": {"8408": "Smart Alarm (8408)", "5033": "Smart Alarm (5033)"}}
+
+        added = []
+        async_add = MagicMock(side_effect=lambda entities: added.extend(entities))
+
+        await async_setup_entry(hass, entry, async_add)
+
+        assert len(added) == 2
+        assert all(e._attr_unique_id.endswith("_event") for e in added)

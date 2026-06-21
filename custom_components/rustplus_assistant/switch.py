@@ -42,18 +42,22 @@ class RustPlusSmartSwitch(RustPlusEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the switch on."""
-        await self.coordinator.socket.set_entity_value(self.rust_entity_id, True)
+        async with self.coordinator.api_lock:
+            await self.coordinator.socket.set_entity_value(self.rust_entity_id, True)
         self._attr_is_on = True
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the switch off."""
-        await self.coordinator.socket.set_entity_value(self.rust_entity_id, False)
+        async with self.coordinator.api_lock:
+            await self.coordinator.socket.set_entity_value(self.rust_entity_id, False)
         self._attr_is_on = False
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
+        await super().async_added_to_hass()
+
         async def subscribe():
             try:
                 async with self.coordinator.api_lock:

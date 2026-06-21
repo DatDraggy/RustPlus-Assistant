@@ -45,8 +45,10 @@ class RustPlusMapCamera(Camera):
     ) -> bytes | None:
         """Return image response."""
         try:
-            # get_map_info() returns a RustMap object which has jpg_image property
-            rust_map = await self.coordinator.socket.get_map_info()
+            # get_map_info() returns a RustMap object which has jpg_image property.
+            # Serialize with the coordinator's polling on the shared websocket.
+            async with self.coordinator.api_lock:
+                rust_map = await self.coordinator.socket.get_map_info()
             if rust_map and hasattr(rust_map, "jpg_image"):
                 self._last_image = rust_map.jpg_image
             return self._last_image

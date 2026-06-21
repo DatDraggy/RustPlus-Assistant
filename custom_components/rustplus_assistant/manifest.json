@@ -7,7 +7,8 @@
   "documentation": "https://github.com/DatDraggy/RustPlus-Assistant",
   "issue_tracker": "https://github.com/DatDraggy/RustPlus-Assistant/issues",
   "integration_type": "hub",
-  "iot_class": "cloud_push",
+  "iot_class": "cloud_polling",
+  "loggers": ["rustplus"],
   "requirements": ["betterproto==2.0.0b7", "rustplus==6.0.9"],
-  "version": "1.0.0"
+  "version": "1.1.0"
 }

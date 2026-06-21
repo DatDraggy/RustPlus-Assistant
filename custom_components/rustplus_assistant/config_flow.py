@@ -8,12 +8,11 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN
-from rustplus import ServerDetails
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +41,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Rust+."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> "RustPlusOptionsFlowHandler":
+        """Get the options flow for this handler."""
+        return RustPlusOptionsFlowHandler()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -99,19 +106,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
-class CannotConnect(HomeAssistantError):
-    """Error to indicate we cannot connect."""
-
-
 class InvalidAuth(HomeAssistantError):
     """Error to indicate there is invalid auth."""
 
 class RustPlusOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle Rust+ options."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        pass
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -159,12 +158,3 @@ class RustPlusOptionsFlowHandler(config_entries.OptionsFlow):
             step_id="init",
             data_schema=options_schema,
         )
-
-# Add standard core options property to ConfigFlow
-def async_get_options_flow(
-    config_entry: config_entries.ConfigEntry,
-) -> RustPlusOptionsFlowHandler:
-    """Get the options flow for this handler."""
-    return RustPlusOptionsFlowHandler(config_entry)
-
-ConfigFlow.async_get_options_flow = async_get_options_flow

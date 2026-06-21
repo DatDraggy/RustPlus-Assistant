@@ -1,14 +1,13 @@
 """The Rust+ integration."""
 from __future__ import annotations
 
-import json
 import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from rustplus import RustSocket, ServerDetails, FCMListener
+from rustplus import RustSocket, ServerDetails
 
 from .const import DOMAIN
 from .coordinator import RustPlusDataCoordinator
@@ -16,7 +15,7 @@ from .fcm_manager import RustPlusFCMManager
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[str] = ["switch", "sensor", "binary_sensor", "camera"]
+PLATFORMS: list[str] = ["switch", "sensor", "binary_sensor", "event", "camera"]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Rust+ from a config entry."""
@@ -59,22 +58,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception as err:
         raise ConfigEntryNotReady(f"Failed to connect to Rust+ server: {err}") from err
 
-    from rustplus.remote.websocket.ws import RustWebsocket
-    if not hasattr(RustWebsocket, "_original_handle_message"):
-        RustWebsocket._original_handle_message = RustWebsocket.handle_message
-        
-        async def safe_handle_message(self, app_message):
-            try:
-                await self._original_handle_message(app_message)
-            except Exception as e:
-                if "RequestError" in type(e).__name__:
-                    self.logger.warning("Suppressed unhandled RequestError in websocket: %s", e)
-                else:
-                    raise e
-        
-        RustWebsocket.handle_message = safe_handle_message
+    # NOTE: reaches into rustplus private internals (pinned via manifest
+    # requirements). Wrapped so a library change degrades gracefully instead of
+    # breaking setup entirely.
+    try:
+        from rustplus.remote.websocket.ws import RustWebsocket
+        if not hasattr(RustWebsocket, "_original_handle_message"):
+            RustWebsocket._original_handle_message = RustWebsocket.handle_message
 
-    coordinator = RustPlusDataCoordinator(hass, socket)
+            async def safe_handle_message(self, app_message):
+                try:
+                    await self._original_handle_message(app_message)
+                except Exception as e:
+                    if "RequestError" in type(e).__name__:
+                        self.logger.warning("Suppressed unhandled RequestError in websocket: %s", e)
+                    else:
+                        raise e
+
+            RustWebsocket.handle_message = safe_handle_message
+    except Exception as err:
+        _LOGGER.debug("Could not install RustWebsocket error guard: %s", err)
+
+    coordinator = RustPlusDataCoordinator(hass, socket, entry)
     await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id] = {

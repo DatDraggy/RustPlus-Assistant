@@ -2,14 +2,14 @@
   "config": {
     "step": {
       "user": {
-        "description": "Enter your Rust+ Server and Player details.",
+        "description": "Enter the FCM credentials JSON string from the Rust+ companion browser extension.",
         "data": {
-          "fcm_credentials": "FCM Credentials (JSON string)",
-          "server_ip": "Server IP Address",
-          "server_port": "Server Port",
-          "player_id": "Steam ID",
-          "player_token": "Player Token"
+          "fcm_credentials": "FCM Credentials (JSON string)"
         }
+      },
+      "confirm_discovery": {
+        "title": "Add Rust Server",
+        "description": "A new Rust server '{name}' was paired via the Rust+ app. Do you want to add it to Home Assistant?"
       }
     },
     "error": {

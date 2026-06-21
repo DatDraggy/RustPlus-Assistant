@@ -53,7 +53,10 @@ class RustPlusSmartAlarm(RustPlusEntity, BinarySensorEntity):
     async def _async_force_refresh(self, title: str, message: str, entity_id: str = None) -> None:
         """Force a state refresh by polling the server."""
         try:
-            info = await self.coordinator.socket.get_entity_info(self.rust_entity_id)
+            # Serialize with the coordinator's polling to avoid concurrent
+            # requests on the shared websocket (see coordinator.api_lock).
+            async with self.coordinator.api_lock:
+                info = await self.coordinator.socket.get_entity_info(self.rust_entity_id)
             if info and hasattr(info, 'value') and info.value:
                 # Cancel any pending reset from a previous alarm
                 if self._reset_task and not self._reset_task.done():

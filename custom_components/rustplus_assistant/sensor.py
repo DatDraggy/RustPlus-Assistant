@@ -5,12 +5,14 @@ import logging
 import time
 from datetime import timedelta
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.core import callback
+
+from rustplus.utils import translate_id_to_stack
 
 from .const import DOMAIN
 from .entity import RustPlusEntity
@@ -63,6 +65,7 @@ class RustPlusServerSensor(CoordinatorEntity[RustPlusDataCoordinator], SensorEnt
         server_port = coordinator.socket.server_details.port
         self._attr_unique_id = f"{server_ip}_{server_port}_{sensor_type}"
         self._attr_native_unit_of_measurement = "players"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self):
@@ -85,6 +88,7 @@ class RustPlusTeamSensor(CoordinatorEntity[RustPlusDataCoordinator], SensorEntit
         server_port = coordinator.socket.server_details.port
         self._attr_unique_id = f"{server_ip}_{server_port}_team_size"
         self._attr_native_unit_of_measurement = "members"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self):
@@ -103,6 +107,7 @@ class RustPlusStorageMonitor(RustPlusEntity, SensorEntity):
         super().__init__(coordinator, entity_id, "storage_monitor", name)
         self._attr_native_value = None
         self._attr_native_unit_of_measurement = "items"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_extra_state_attributes = {}
         self.coordinator.entities_to_poll.add(self.rust_entity_id)
 
@@ -181,7 +186,6 @@ class RustPlusStorageMonitor(RustPlusEntity, SensorEntity):
         """Update state using info object."""
         try:
             self._attr_native_value = len(info.items)
-            from rustplus.utils import translate_id_to_stack
             item_counts = self._attr_extra_state_attributes.copy() if self._attr_extra_state_attributes else {}
             
             # Reset counts for all items currently in our dictionary so we can update them accurately
@@ -196,7 +200,7 @@ class RustPlusStorageMonitor(RustPlusEntity, SensorEntity):
                 except Exception:
                     pass
                     
-            if info.has_protection and info.protection_expiry > 0:
+            if getattr(info, "has_protection", False) and getattr(info, "protection_expiry", 0) > 0:
 
                 duration_seconds = max(0, info.protection_expiry - int(time.time()))
                 item_counts["Upkeep Duration"] = str(timedelta(seconds=duration_seconds))
@@ -230,7 +234,8 @@ class RustPlusTCMaterialSensor(RustPlusEntity, SensorEntity):
         self._attr_unique_id = f"{self._attr_unique_id}_{material_name.lower().replace(' ', '_')}"
         self.material_name = material_name
         self._attr_native_value = 0
-        self._attr_native_unit_of_measurement = ""
+        self._attr_native_unit_of_measurement = "items"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self):
@@ -239,7 +244,6 @@ class RustPlusTCMaterialSensor(RustPlusEntity, SensorEntity):
         if not info:
             return self._attr_native_value
 
-        from rustplus.utils import translate_id_to_stack
         count = 0
         for item in info.items:
             try:
@@ -265,7 +269,7 @@ class RustPlusTCUpkeepSensor(RustPlusEntity, SensorEntity):
     def native_value(self):
         """Return the state of the sensor."""
         info = self.coordinator.data.get("entities", {}).get(self.rust_entity_id)
-        if not info or not info.has_protection or info.protection_expiry == 0:
+        if not info or not getattr(info, "has_protection", False) or getattr(info, "protection_expiry", 0) == 0:
             return self._attr_native_value
 
 
