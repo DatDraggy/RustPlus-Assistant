@@ -50,7 +50,7 @@ class RustPlusSmartAlarm(RustPlusEntity, BinarySensorEntity):
             async_dispatcher_connect(self.hass, f"rustplus_alarm_refresh_{ip}", self._async_force_refresh)
         )
 
-    async def _async_force_refresh(self, title: str, message: str, entity_id: str = None) -> None:
+    async def _async_force_refresh(self, title: str, message: str) -> None:
         """Force a state refresh by polling the server."""
         try:
             # Serialize with the coordinator's polling to avoid concurrent

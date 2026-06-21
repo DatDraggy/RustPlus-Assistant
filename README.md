@@ -18,6 +18,14 @@ A Home Assistant custom integration to connect with the **Rust+ Companion App** 
 
 ---
 
+## Companion Dashboard Card
+
+For a game-style visual grid of your Storage Monitors (item stacks plus a color-coded decay/upkeep timer), install the companion Lovelace card:
+
+➡️ **[DatDraggy/RustPlus-Assistant-Cards](https://github.com/DatDraggy/RustPlus-Assistant-Cards)**
+
+---
+
 ## Installation
 
 ### Method 1: Via HACS (Recommended)

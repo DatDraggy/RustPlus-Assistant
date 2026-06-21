@@ -228,40 +228,18 @@ class RustPlusFCMManager:
                     if "port" in b_data:
                         event_data["server_port"] = b_data["port"]
                         
-                    # If this is an alarm, tell all binary sensors for this server to poll instantly
+                    # If this is an alarm, notify every alarm entity for this
+                    # server. Facepunch's alarm push does NOT include an entityId
+                    # (confirmed via logging), so we cannot tell which specific
+                    # alarm fired — all alarm entities on the server react, and
+                    # disambiguation is left to each entity and the title/message.
                     if channel_id == "alarm" and "ip" in b_data:
-                        # --- TEMPORARY DIAGNOSTIC -----------------------------------
-                        # Confirm whether Facepunch's alarm push actually carries the
-                        # alarm's entityId (and where), so we can later target the one
-                        # alarm that fired instead of broadcasting to all of them.
-                        # Logged at INFO so it is visible without enabling debug; keys
-                        # only, no secrets. Remove once the thesis is confirmed.
-                        entity_id_from_data = data_message.get("entityId")
-                        entity_id_from_notif = (
-                            notification.get("entityId") if isinstance(notification, dict) else None
-                        )
-                        entity_id_from_body = b_data.get("entityId")
-                        _LOGGER.info(
-                            "RUSTPLUS ALARM entityId DIAGNOSTIC: "
-                            "data_message keys=%s | notification keys=%s | body keys=%s | "
-                            "entityId(data=%s, notification=%s, body=%s)",
-                            sorted(data_message.keys()),
-                            sorted(notification.keys()) if isinstance(notification, dict) else type(notification).__name__,
-                            sorted(b_data.keys()),
-                            entity_id_from_data,
-                            entity_id_from_notif,
-                            entity_id_from_body,
-                        )
-                        # -----------------------------------------------------------
-
-                        entity_id = entity_id_from_data or entity_id_from_notif or entity_id_from_body
-
                         _LOGGER.debug(
-                            "Dispatching alarm refresh for IP %s (title=%s, entity_id=%s)",
-                            b_data['ip'], title, entity_id,
+                            "Dispatching alarm refresh for IP %s (title=%s)",
+                            b_data['ip'], title,
                         )
                         async_dispatcher_send(
-                            self.hass, f"rustplus_alarm_refresh_{b_data['ip']}", title, message, entity_id
+                            self.hass, f"rustplus_alarm_refresh_{b_data['ip']}", title, message
                         )
                 except Exception as e:
                     _LOGGER.error("Error processing FCM body: %s", e)
