@@ -91,11 +91,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if hass.data[DOMAIN][entry.entry_id].get("type") == "account":
         data = hass.data[DOMAIN].pop(entry.entry_id)
         fcm_manager = data.get("fcm_manager")
-        if fcm_manager and hasattr(fcm_manager, 'listener'):
-            try:
-                fcm_manager.listener.close()
-            except Exception:
-                _LOGGER.debug("Failed to stop FCM listener cleanly")
+        if fcm_manager:
+            fcm_manager.close()
         return True
 
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):

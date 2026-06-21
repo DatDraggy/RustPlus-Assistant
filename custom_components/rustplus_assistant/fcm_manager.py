@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
 
 from rustplus import FCMListener
@@ -14,12 +18,24 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+# How often the watchdog fires to verify the FCM listener is healthy.
+_WATCHDOG_INTERVAL = timedelta(hours=1)
+
+# If no FCM notification has been received for this many seconds, the watchdog
+# assumes the connection is silently dead and forces a reconnect.  Google's FCM
+# connections to mtalk.google.com typically survive 1-7 days but can drop at
+# any time without signalling the client.  25 hours is conservative enough to
+# avoid false positives while still catching stale connections within a day.
+_MAX_SILENCE_SECONDS = 25 * 60 * 60  # 25 hours
+
 class RustPlusFCMManager:
     """Manager for FCM Listener."""
 
     def __init__(self, hass: HomeAssistant, fcm_credentials: str) -> None:
         """Initialize the FCM Manager."""
         self.hass = hass
+        self._watchdog_cancel = None
+        self._last_activity: float = time.monotonic()
         try:
             creds = json.loads(fcm_credentials)
             # Unwrap if the user pasted the full wrapper JSON from the extension
@@ -29,16 +45,94 @@ class RustPlusFCMManager:
             creds = {}
             _LOGGER.error("Invalid FCM credentials format.")
 
-        data = {"fcm_credentials": creds}
-        self.listener = FCMListener(data)
+        self._fcm_data = {"fcm_credentials": creds}
+        self._build_listener()
+
+    def _build_listener(self) -> None:
+        """Create and wire up a fresh FCMListener instance."""
+        self.listener = FCMListener(self._fcm_data)
         self.listener.on_notification = self._on_notification
 
     def start(self) -> None:
-        """Start listening to FCM notifications."""
+        """Start listening to FCM notifications and arm the watchdog."""
         self.listener.start(daemon=True)
+        self._watchdog_cancel = async_track_time_interval(
+            self.hass, self._async_watchdog, _WATCHDOG_INTERVAL
+        )
+        _LOGGER.debug("FCM listener started; watchdog armed (interval: %s).", _WATCHDOG_INTERVAL)
+
+    @callback
+    def _async_watchdog(self, _now: Any) -> None:
+        """Periodically verify the FCM listener is healthy; restart if not.
+
+        Two failure modes are checked:
+
+        1. **Thread death** - the push_receiver listen() call returned or raised,
+           causing the daemon thread to exit.  Detected via thread.is_alive().
+
+        2. **Silent socket death** - the thread is still alive (blocked on
+           recv() on the mtalk.google.com SSL socket) but Google has dropped
+           the connection.  No exception is raised and no data arrives.  This is
+           the most common real-world failure mode.  Detected by tracking the
+           time since the last received notification; if it exceeds
+           _MAX_SILENCE_SECONDS we proactively tear down and rebuild.
+        """
+        # --- Check 1: thread death ---
+        thread: threading.Thread | None = None
+        for attr in ("thread", "_thread", "_listener_thread", "listener_thread"):
+            candidate = getattr(self.listener, attr, None)
+            if isinstance(candidate, threading.Thread):
+                thread = candidate
+                break
+
+        if thread is not None and not thread.is_alive():
+            _LOGGER.warning(
+                "FCM listener thread is no longer alive - reconnecting."
+            )
+            self._restart_listener()
+            return
+
+        # --- Check 2: silent socket death ---
+        silence = time.monotonic() - self._last_activity
+        if silence > _MAX_SILENCE_SECONDS:
+            _LOGGER.warning(
+                "No FCM activity for %.1f hours - assuming the connection is "
+                "silently dead.  Reconnecting.",
+                silence / 3600,
+            )
+            self._restart_listener()
+            return
+
+        _LOGGER.debug(
+            "FCM watchdog: healthy (thread alive=%s, silence=%.0fs).",
+            thread.is_alive() if thread else "unknown",
+            silence,
+        )
+
+    def _restart_listener(self) -> None:
+        """Tear down the current listener and start a fresh one."""
+        try:
+            self.listener.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self._build_listener()
+        self.listener.start(daemon=True)
+        self._last_activity = time.monotonic()
+        _LOGGER.info("FCM listener successfully restarted.")
+
+    def close(self) -> None:
+        """Cancel the watchdog and stop the FCM listener."""
+        if self._watchdog_cancel is not None:
+            self._watchdog_cancel()
+            self._watchdog_cancel = None
+        try:
+            self.listener.close()
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Failed to stop FCM listener cleanly.")
 
     def _on_notification(self, obj: Any, notification: dict, data_message: dict) -> None:
         """Handle incoming FCM notification."""
+        self._last_activity = time.monotonic()
         # Dispatch to the main event loop
         self.hass.loop.call_soon_threadsafe(
             self._handle_notification_threadsafe, notification, data_message
@@ -162,7 +256,14 @@ class RustPlusFCMManager:
                 if socket:
                     try:
                         info = await socket.get_entity_info(int(entity_id))
-                        if type(info).__name__ != "RustError":
+                        if type(info).__name__ == "RustError":
+                            _LOGGER.warning(
+                                "Entity %s not found on server entry '%s' (RustError: %s). "
+                                "The socket may be stale — try reloading the server entry if "
+                                "pairing is not auto-discovered.",
+                                entity_id, entry.title, info,
+                            )
+                        else:
                             options = dict(entry.options)
                             if str(entity_type) in ["1", "Switch", "Smart Switch"]:
                                 switches = dict(options.get("switches", {}))
@@ -212,7 +313,7 @@ class RustPlusFCMManager:
                             )
                             return
                     except Exception as err:
-                        _LOGGER.error("Failed to query entity info: %s", err)
+                        _LOGGER.error("Failed to query entity info for entity %s on server '%s': %s", entity_id, entry.title, err)
 
         # Fall back to repair issue if we couldn't match it
         async_create_issue(
