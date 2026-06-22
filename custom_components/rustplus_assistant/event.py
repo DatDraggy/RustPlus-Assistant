@@ -1,9 +1,20 @@
-"""Binary sensor platform for Rust+."""
+"""Event platform for Rust+ Smart Alarms.
+
+Rust Smart Alarms are *momentary* triggers, so each one is modelled as a Home
+Assistant ``event`` entity. It is driven by the server's websocket entity-change
+events: every event carries the alarm's own ``entity_id``, so each entity fires
+only for its own alarm — no polling, and no guessing which alarm fired from the
+(entity-id-less) FCM push.
+
+This is shipped alongside the binary_sensor so both can coexist on the same
+alarm device; the event entity is the idiomatic primitive for a stateless,
+momentary trigger (doorbell/button/alarm).
+"""
 from __future__ import annotations
 
 import logging
 
-from homeassistant.components.binary_sensor import BinarySensorEntity, BinarySensorDeviceClass
+from homeassistant.components.event import EventEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -13,37 +24,40 @@ from .entity import RustPlusEntity
 
 _LOGGER = logging.getLogger(__name__)
 
+EVENT_TRIGGERED = "triggered"
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Rust+ binary sensor platform."""
+    """Set up the Rust+ alarm event platform."""
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator = data["coordinator"]
 
     entities_to_add = []
     paired_alarms = entry.options.get("smart_alarms", {})
     for eid, name in paired_alarms.items():
-        entities_to_add.append(RustPlusSmartAlarm(coordinator, int(eid), name))
+        entities_to_add.append(RustPlusSmartAlarmEvent(coordinator, int(eid), name))
 
     async_add_entities(entities_to_add)
 
-class RustPlusSmartAlarm(RustPlusEntity, BinarySensorEntity):
-    """Representation of a Rust+ Smart Alarm.
 
-    Driven directly by the server's websocket entity-change events (like the
-    Smart Switch). Each event carries the alarm's own ``entity_id`` and current
-    ``value``, so every alarm reflects exactly its own state — no polling, and
-    no guessing which alarm fired from the (entity-id-less) FCM push.
-    """
+class RustPlusSmartAlarmEvent(RustPlusEntity, EventEntity):
+    """A Rust+ Smart Alarm modelled as a momentary event entity."""
 
-    _attr_device_class = BinarySensorDeviceClass.SAFETY
+    _attr_event_types = [EVENT_TRIGGERED]
 
     def __init__(self, coordinator, entity_id: int, name: str) -> None:
         """Initialize."""
         super().__init__(coordinator, entity_id, "smart_alarm", name)
-        self._attr_is_on = False
+        # Distinct unique_id so this can coexist with the binary_sensor on the
+        # same alarm device (RustPlusEntity.__init__ built device_info from the
+        # un-suffixed unique_id, so both entities attach to the same device).
+        self._attr_unique_id = f"{self._attr_unique_id}_event"
+        self._attr_name = f"{name} Event"
+        self._last_value = False
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to this alarm's websocket entity events."""
@@ -65,15 +79,13 @@ class RustPlusSmartAlarm(RustPlusEntity, BinarySensorEntity):
         self.async_on_remove(self._async_remove_listener)
 
     async def _async_handle_event(self, value: bool) -> None:
-        """Reflect the alarm's state from a websocket entity event."""
-        _LOGGER.debug("Smart alarm %s entity event: value=%s", self.rust_entity_id, value)
-        self._attr_is_on = bool(value)
-        self.async_write_ha_state()
-
-    @property
-    def should_poll(self) -> bool:
-        """Return False; the alarm is driven by websocket events, not polling."""
-        return False
+        """Fire a momentary event on the alarm's rising edge (off -> on)."""
+        triggered = bool(value) and not self._last_value
+        self._last_value = bool(value)
+        if triggered:
+            _LOGGER.debug("Smart alarm %s event entity: triggered", self.rust_entity_id)
+            self._trigger_event(EVENT_TRIGGERED)
+            self.async_write_ha_state()
 
     @callback
     def _async_remove_listener(self):

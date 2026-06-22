@@ -25,7 +25,8 @@ async def async_setup_entry(
 
     entities_to_add = []
 
-    # We load paired devices from the config entry options (if saved by config flow/options flow)
+    # Paired devices are loaded from the config entry options (populated by
+    # auto-discovery when a device is paired in the Rust+ app).
     paired_switches = entry.options.get("switches", {})
     for eid, name in paired_switches.items():
         entities_to_add.append(RustPlusSmartSwitch(coordinator, int(eid), name))
@@ -33,7 +34,12 @@ async def async_setup_entry(
     async_add_entities(entities_to_add)
 
 class RustPlusSmartSwitch(RustPlusEntity, SwitchEntity):
-    """Representation of a Rust+ Smart Switch."""
+    """Representation of a Rust+ Smart Switch.
+
+    Driven by the server's websocket entity-change events; the coordinator owns
+    the (ref-counted) server subscription so the switch is re-subscribed after a
+    reconnect along with the alarms.
+    """
 
     def __init__(self, coordinator, entity_id: int, name: str) -> None:
         """Initialize."""
@@ -55,49 +61,37 @@ class RustPlusSmartSwitch(RustPlusEntity, SwitchEntity):
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
-        """Run when entity about to be added to hass."""
+        """Subscribe to this switch's websocket entity events."""
         await super().async_added_to_hass()
-
-        async def subscribe():
-            try:
-                async with self.coordinator.api_lock:
-                    if not hasattr(self.coordinator.socket.ws, "open") or not self.coordinator.socket.ws.open:
-                        await self.coordinator.socket.connect()
-                    await self.coordinator.socket.set_subscription_to_entity(self.rust_entity_id, True)
-            except Exception as e:
-                _LOGGER.debug("Failed to subscribe to switch %s: %s", self.rust_entity_id, e)
-                
-        self.hass.async_create_task(subscribe())
-        
         from rustplus.identification import RegisteredListener
         from rustplus.events import EntityEventPayload
-        
+
+        self.hass.async_create_task(
+            self.coordinator.async_subscribe_entity(self.rust_entity_id)
+        )
+
         async def handle_event(event: EntityEventPayload):
             self.hass.async_create_task(self._async_handle_event(event.value))
-            
+
         self._listener = RegisteredListener(str(self.rust_entity_id), handle_event)
-        EntityEventPayload.HANDLER_LIST.register(self._listener, self.coordinator.socket.server_details)
-        
+        EntityEventPayload.HANDLER_LIST.register(
+            self._listener, self.coordinator.socket.server_details
+        )
         self.async_on_remove(self._async_remove_listener)
 
     async def _async_handle_event(self, value: bool) -> None:
-        """Handle state change from websocket."""
+        """Handle state change from a websocket entity event."""
+        _LOGGER.debug("Smart switch %s entity event: value=%s", self.rust_entity_id, value)
         self._attr_is_on = value
         self.async_write_ha_state()
 
     @callback
     def _async_remove_listener(self):
-        """Clean up listener."""
+        """Clean up the listener and release the server subscription."""
         from rustplus.events import EntityEventPayload
-        EntityEventPayload.HANDLER_LIST.unregister(self._listener, self.coordinator.socket.server_details)
-        
-        async def unsubscribe():
-            try:
-                async with self.coordinator.api_lock:
-                    await self.coordinator.socket.set_subscription_to_entity(self.rust_entity_id, False)
-            except Exception as e:
-                _LOGGER.debug("Failed to unsubscribe from switch %s: %s", self.rust_entity_id, e)
-        
-        self.hass.async_create_task(unsubscribe())
-
-
+        EntityEventPayload.HANDLER_LIST.unregister(
+            self._listener, self.coordinator.socket.server_details
+        )
+        self.hass.async_create_task(
+            self.coordinator.async_unsubscribe_entity(self.rust_entity_id)
+        )

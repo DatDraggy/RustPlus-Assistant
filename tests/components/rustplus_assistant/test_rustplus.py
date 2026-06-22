@@ -39,14 +39,24 @@ def _make_hass():
     """Create a minimal mock HomeAssistant."""
     hass = MagicMock()
     hass.data = {}
-    hass.async_create_task = MagicMock(side_effect=lambda coro: asyncio.ensure_future(coro))
+    def _record_task(coro):
+        # These unit tests only assert the call happened; close real coroutines
+        # so Python doesn't warn that they were never awaited.
+        if asyncio.iscoroutine(coro):
+            coro.close()
+    hass.async_create_task = MagicMock(side_effect=_record_task)
     hass.states = MagicMock()
     hass.states.get = MagicMock(return_value=None)
     hass.bus = MagicMock()
     hass.services = MagicMock()
     hass.services.async_call = AsyncMock()
     hass.config_entries = MagicMock()
-    hass.loop = asyncio.get_event_loop()
+    try:
+        hass.loop = asyncio.get_event_loop()
+    except RuntimeError:
+        # Python 3.12+ raises when there's no running loop (sync tests); a fresh
+        # loop suffices for the mock since these tests never run it.
+        hass.loop = asyncio.new_event_loop()
     return hass
 
 
@@ -395,57 +405,72 @@ class TestSmartAlarm:
         assert alarm.should_poll is False
 
     @pytest.mark.asyncio
-    async def test_force_refresh_activates_on_value_true(self):
-        """When the server reports value=True, the alarm should activate."""
+    async def test_handle_event_activates_on_true(self):
+        """A websocket entity event with value=True should turn the alarm on."""
         from custom_components.rustplus_assistant.binary_sensor import RustPlusSmartAlarm
 
-        hass = _make_hass()
-        coord = _make_coordinator(hass=hass)
-        coord.socket.get_entity_info = AsyncMock(return_value=_make_entity_info(value=True))
-
+        coord = _make_coordinator()
         alarm = RustPlusSmartAlarm(coord, 8408, "Smart Alarm (8408)")
-        alarm.hass = hass
         alarm.async_write_ha_state = MagicMock()
 
-        await alarm._async_force_refresh("Explosion!", "Your base is under attack!")
+        await alarm._async_handle_event(True)
 
         assert alarm._attr_is_on is True
         alarm.async_write_ha_state.assert_called()
 
     @pytest.mark.asyncio
-    async def test_force_refresh_ignores_value_false(self):
-        """When the server reports value=False, the alarm should NOT activate."""
+    async def test_handle_event_clears_on_false(self):
+        """A websocket entity event with value=False should turn the alarm off."""
         from custom_components.rustplus_assistant.binary_sensor import RustPlusSmartAlarm
 
-        hass = _make_hass()
-        coord = _make_coordinator(hass=hass)
-        coord.socket.get_entity_info = AsyncMock(return_value=_make_entity_info(value=False))
-
+        coord = _make_coordinator()
         alarm = RustPlusSmartAlarm(coord, 8408, "Smart Alarm (8408)")
-        alarm.hass = hass
+        alarm._attr_is_on = True
         alarm.async_write_ha_state = MagicMock()
 
-        await alarm._async_force_refresh("Explosion!", "Your base is under attack!")
+        await alarm._async_handle_event(False)
 
         assert alarm._attr_is_on is False
-        alarm.async_write_ha_state.assert_not_called()
+        alarm.async_write_ha_state.assert_called()
+
+
+class TestSmartAlarmEvent:
+    """Tests for event.py Smart Alarm event entity."""
+
+    def test_identity(self):
+        """Event entity should suffix unique_id/name and expose the trigger type."""
+        from custom_components.rustplus_assistant.event import (
+            RustPlusSmartAlarmEvent,
+            EVENT_TRIGGERED,
+        )
+
+        coord = _make_coordinator()
+        ev = RustPlusSmartAlarmEvent(coord, 8408, "Smart Alarm (8408)")
+
+        assert ev._attr_event_types == [EVENT_TRIGGERED]
+        assert ev._attr_unique_id.endswith("_event")
+        assert ev._attr_name == "Smart Alarm (8408) Event"
 
     @pytest.mark.asyncio
-    async def test_force_refresh_handles_api_error(self):
-        """Should not crash if the API call fails."""
-        from custom_components.rustplus_assistant.binary_sensor import RustPlusSmartAlarm
+    async def test_fires_only_on_rising_edge(self):
+        """Event should fire on off->on transitions only, not on repeats or off."""
+        from custom_components.rustplus_assistant.event import RustPlusSmartAlarmEvent
 
-        hass = _make_hass()
-        coord = _make_coordinator(hass=hass)
-        coord.socket.get_entity_info = AsyncMock(side_effect=Exception("Connection lost"))
+        coord = _make_coordinator()
+        ev = RustPlusSmartAlarmEvent(coord, 8408, "Smart Alarm (8408)")
+        ev._trigger_event = MagicMock()
+        ev.async_write_ha_state = MagicMock()
 
-        alarm = RustPlusSmartAlarm(coord, 8408, "Smart Alarm (8408)")
-        alarm.hass = hass
-        alarm.async_write_ha_state = MagicMock()
+        await ev._async_handle_event(True)    # rising edge -> fire
+        ev._trigger_event.assert_called_once()
 
-        # Should not raise
-        await alarm._async_force_refresh("Explosion!", "Your base is under attack!")
-        assert alarm._attr_is_on is False
+        ev._trigger_event.reset_mock()
+        await ev._async_handle_event(True)    # still on -> no fire
+        await ev._async_handle_event(False)   # falling -> no fire
+        ev._trigger_event.assert_not_called()
+
+        await ev._async_handle_event(True)    # rising again -> fire
+        ev._trigger_event.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -669,58 +694,6 @@ class TestConfigFlow:
 
 
 # ---------------------------------------------------------------------------
-# Options Flow Parsing Tests
-# ---------------------------------------------------------------------------
-
-class TestOptionsFlowParsing:
-    """Tests for the options flow eid:name parsing logic."""
-
-    def test_switch_parsing(self):
-        """Options flow should parse 'eid:name' format for switches."""
-        user_input = {
-            "add_switches": "12345:Main Light, 67890:Front Door",
-            "add_monitors": "",
-            "add_alarms": "",
-        }
-
-        switches = {}
-        for line in user_input.get("add_switches", "").split(","):
-            if ":" in line:
-                eid, name = line.split(":", 1)
-                switches[eid.strip()] = name.strip()
-
-        assert switches == {"12345": "Main Light", "67890": "Front Door"}
-
-    def test_empty_input(self):
-        """Empty strings should produce no entries."""
-        user_input = {
-            "add_switches": "",
-            "add_monitors": "",
-            "add_alarms": "",
-        }
-
-        switches = {}
-        for line in user_input.get("add_switches", "").split(","):
-            if ":" in line:
-                eid, name = line.split(":", 1)
-                switches[eid.strip()] = name.strip()
-
-        assert switches == {}
-
-    def test_malformed_input_no_colon(self):
-        """Input without colons should be ignored."""
-        user_input = {"add_switches": "12345 Main Light"}
-
-        switches = {}
-        for line in user_input.get("add_switches", "").split(","):
-            if ":" in line:
-                eid, name = line.split(":", 1)
-                switches[eid.strip()] = name.strip()
-
-        assert switches == {}
-
-
-# ---------------------------------------------------------------------------
 # Platform Setup Tests
 # ---------------------------------------------------------------------------
 
@@ -824,3 +797,65 @@ class TestPlatformSetup:
 
         assert len(added) == 1
         assert added[0].rust_entity_id == 854388568
+
+
+# ---------------------------------------------------------------------------
+# Coordinator Subscription Tests
+# ---------------------------------------------------------------------------
+
+def _make_sub_coordinator():
+    """A coordinator with only the bits the subscription helpers touch."""
+    from custom_components.rustplus_assistant.coordinator import RustPlusDataCoordinator
+
+    coord = RustPlusDataCoordinator.__new__(RustPlusDataCoordinator)
+    coord.socket = MagicMock()
+    coord.socket.ws = MagicMock()
+    coord.socket.ws.open = True
+    coord.socket.connect = AsyncMock()
+    coord.socket.set_subscription_to_entity = AsyncMock()
+    coord.api_lock = asyncio.Lock()
+    coord.subscribed_entities = set()
+    coord._subscription_refs = {}
+    return coord
+
+
+class TestCoordinatorSubscriptions:
+    """Tests for ref-counted entity-event subscriptions + reconnect re-subscribe."""
+
+    @pytest.mark.asyncio
+    async def test_refcount_subscribe_once_unsubscribe_on_last(self):
+        """An alarm shares one eid across its binary_sensor + event entity."""
+        coord = _make_sub_coordinator()
+        eid = 950955033
+
+        await coord.async_subscribe_entity(eid)
+        await coord.async_subscribe_entity(eid)
+
+        assert coord._subscription_refs[eid] == 2
+        assert eid in coord.subscribed_entities
+        # Only the first reference hits the server.
+        assert coord.socket.set_subscription_to_entity.call_count == 1
+        coord.socket.set_subscription_to_entity.assert_called_with(eid, True)
+
+        # Removing one entity must NOT unsubscribe — the other still needs events.
+        await coord.async_unsubscribe_entity(eid)
+        assert eid in coord.subscribed_entities
+        assert coord.socket.set_subscription_to_entity.call_count == 1
+
+        # Last reference gone → unsubscribe on the server.
+        await coord.async_unsubscribe_entity(eid)
+        assert eid not in coord.subscribed_entities
+        assert coord.socket.set_subscription_to_entity.call_count == 2
+        coord.socket.set_subscription_to_entity.assert_called_with(eid, False)
+
+    @pytest.mark.asyncio
+    async def test_resubscribe_all_after_reconnect(self):
+        """All active subscriptions are re-affirmed after a reconnect."""
+        coord = _make_sub_coordinator()
+        coord.subscribed_entities = {950955033, 1077946609}
+
+        await coord._async_resubscribe_all()
+
+        sent = {c.args for c in coord.socket.set_subscription_to_entity.call_args_list}
+        assert (950955033, True) in sent
+        assert (1077946609, True) in sent

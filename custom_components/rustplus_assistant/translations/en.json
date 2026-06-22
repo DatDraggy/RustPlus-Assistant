@@ -7,6 +7,13 @@
           "fcm_credentials": "FCM Credentials (JSON string)"
         }
       },
+      "reconfigure": {
+        "title": "Refresh Rust+ credentials",
+        "description": "Paste the new FCM credentials JSON from the Rust+ companion browser extension. This replaces the stored credentials for this account and reconnects the push listener. Your paired devices are kept.",
+        "data": {
+          "fcm_credentials": "FCM Credentials (JSON string)"
+        }
+      },
       "confirm_discovery": {
         "title": "Add Rust Server",
         "description": "A new Rust server '{name}' was paired via the Rust+ app. Do you want to add it to Home Assistant?"
@@ -18,25 +25,15 @@
       "unknown": "Unexpected error"
     },
     "abort": {
-      "already_configured": "Device is already configured"
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "description": "Add discovered devices using the format 'ENTITY_ID:NAME', separated by commas. (e.g. '12345:Main Switch, 67890:Lights')",
-        "data": {
-          "add_switches": "Add Smart Switches",
-          "add_monitors": "Add Storage Monitors",
-          "add_alarms": "Add Smart Alarms"
-        }
-      }
+      "already_configured": "Device is already configured",
+      "reconfigure_successful": "Credentials updated. Your paired devices were kept.",
+      "reconfigure_account_only": "Only the Rust+ account entry holds FCM credentials. Reconfigure the account entry, not a server."
     }
   },
   "issues": {
     "device_paired": {
       "title": "Rust+ Device Paired: {name}",
-      "description": "A new {type} ({name}, ID: {id}) was paired via the Rust+ app. You can now add it to your configuration if desired using the integration's Options flow."
+      "description": "A new {type} ({name}, ID: {id}) was paired via the Rust+ app, but it couldn't be matched to a configured server yet. Make sure the server is added to Home Assistant and loaded, then re-pair the device — it will be added automatically."
     },
     "rename_device": {
       "title": "Action Required: Rename {name}",

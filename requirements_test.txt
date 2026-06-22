@@ -1,11 +1,15 @@
 # Minimal test dependencies for the Rust+ Assistant integration.
 #
-# pytest-homeassistant-custom-component bundles a matching `homeassistant`,
-# `pytest`, and `pytest-asyncio` — the standard toolchain for testing HACS
-# custom integrations. It also pulls in voluptuous via homeassistant.
+# pytest-homeassistant-custom-component bundles a matching `homeassistant` and
+# `pytest` — the standard toolchain for testing HACS custom integrations. It
+# also pulls in voluptuous via homeassistant.
+#
+# pytest-asyncio is listed explicitly: the suite uses `asyncio_mode = auto`
+# (see pytest.ini) and the bundled version isn't guaranteed across environments.
 #
 # rustplus / betterproto are required because the integration imports them at
 # module load time. Keep these pinned to custom_components/.../manifest.json.
 pytest-homeassistant-custom-component
+pytest-asyncio
 rustplus==6.0.9
 betterproto==2.0.0b7
