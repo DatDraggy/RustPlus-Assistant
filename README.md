@@ -67,3 +67,7 @@ When you pair a new device (like a Smart Switch, Smart Alarm, or Storage Monitor
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Disclaimer
+
+This code is heavily based on Gemini and Claude's work, but manually reviewed and tested.
