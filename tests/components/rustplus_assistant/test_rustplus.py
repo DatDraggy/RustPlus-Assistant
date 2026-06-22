@@ -859,3 +859,138 @@ class TestCoordinatorSubscriptions:
         sent = {c.args for c in coord.socket.set_subscription_to_entity.call_args_list}
         assert (950955033, True) in sent
         assert (1077946609, True) in sent
+
+
+# ---------------------------------------------------------------------------
+# QR-auth module tests (deterministic parts; no network)
+# ---------------------------------------------------------------------------
+
+class TestAuth:
+    """Tests for auth.py — hand-rolled protobuf, JWT parsing, token extraction."""
+
+    def test_varint_roundtrip(self):
+        from custom_components.rustplus_assistant.auth import _varint, _read_varint
+        for n in [0, 1, 127, 128, 300, 976529667804, 17800227057520431560]:
+            assert _read_varint(_varint(n), 0)[0] == n
+
+    def test_protobuf_roundtrip_nested(self):
+        from custom_components.rustplus_assistant.auth import _p_str, _p_vint, _p_msg, _pb_decode
+        # mirrors the BeginAuthSessionViaQR request shape: device_details(3)={name(1), platform(2)}
+        buf = _p_msg(3, _p_str(1, "Home Assistant Rust+") + _p_vint(2, 2))
+        d = _pb_decode(buf)
+        inner = _pb_decode(d[3][0])
+        assert inner[1][0] == b"Home Assistant Rust+"
+        assert inner[2][0] == 2
+
+    def test_steamid_from_jwt(self):
+        import base64
+        import json as _json
+        from custom_components.rustplus_assistant.auth import RustPlusQRAuth
+        payload = base64.urlsafe_b64encode(
+            _json.dumps({"sub": "76561198121218959", "iss": "steam"}).encode()
+        ).rstrip(b"=").decode()
+        token = "hdr." + payload + ".sig"
+        assert RustPlusQRAuth._steamid_from_jwt(token) == "76561198121218959"
+
+    def test_token_extraction_not_truncated(self):
+        """Regression: the old [A-Za-z0-9_\\-.] regex truncated tokens containing +/=/ ."""
+        import re
+        from urllib.parse import unquote
+        loc = "/?steamId=765&token=ab%2Bcd%2Fef%3Dgh.ij_kl-mn&x=1"
+        m = re.search(r"[?&#]token=([^&\s\"'<>]{16,})", loc)
+        assert m, "token must be captured"
+        assert unquote(m.group(1)) == "ab+cd/ef=gh.ij_kl-mn"
+
+    def test_begin_parses_qr_session(self):
+        """begin() must decode client_id(1)/challenge(2)/request_id(3) from the WebAPI reply."""
+        from custom_components.rustplus_assistant.auth import (
+            RustPlusQRAuth, _p_vint, _p_str,
+        )
+
+        class _Resp:
+            content = _p_vint(1, 12345) + _p_str(2, "https://s.team/q/ABCD") + _p_str(3, b"\x01\x02\x03")
+
+            def raise_for_status(self):
+                pass
+
+        auth = RustPlusQRAuth()
+        auth.session.post = lambda *a, **k: _Resp()  # type: ignore[assignment]
+        assert auth.begin() == "https://s.team/q/ABCD"
+        assert auth._client_id == 12345
+        assert auth._request_id == b"\x01\x02\x03"
+
+    def test_complete_threads_device_id_into_registrations(self):
+        """Regression: complete() must forward the per-install DeviceId all the way into
+        both the Expo and the Facepunch push registrations.
+
+        complete() previously took only refresh_token and dropped device_id, so every
+        install fell back to a random uuid (and the config flow's call crashed with a
+        TypeError). Guard the full chain complete() -> _fcm_register -> {Expo, Facepunch}.
+        """
+        from custom_components.rustplus_assistant.auth import RustPlusQRAuth
+
+        posts: list[tuple[str, dict]] = []
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"data": {"expoPushToken": "ExponentPushToken[xyz]"}}
+
+        class _Session:
+            def post(self, url, **kw):
+                posts.append((url, kw.get("json") or {}))
+                return _Resp()
+
+        auth = RustPlusQRAuth()
+        auth.session = _Session()  # type: ignore[assignment]
+        auth._steamid_from_jwt = lambda _t: "765"          # type: ignore[assignment]
+        auth._load_web_cookies = lambda _rt, _sid: None     # type: ignore[assignment]
+        auth._get_rust_token = lambda: "RUST_TOKEN"         # type: ignore[assignment]
+        auth._android_fcm_register = lambda: {              # type: ignore[assignment]
+            "fcm": {"token": "FCMTOK"},
+            "gcm": {"androidId": "aid", "securityToken": "stok"},
+        }
+
+        creds = auth.complete("hdr.payload.sig", device_id="HA-INSTALL-42")
+
+        assert creds["rustplus_auth_token"] == "RUST_TOKEN"
+        assert creds["expo_push_token"] == "ExponentPushToken[xyz]"
+        assert creds["fcm_credentials"] == {
+            "fcm": {"token": "FCMTOK"},
+            "gcm": {"androidId": "aid", "securityToken": "stok"},
+        }
+        expo_post = next(body for url, body in posts if "getExpoPushToken" in url)
+        fp_post = next(body for url, body in posts if "/api/push/register" in url)
+        assert expo_post["deviceId"] == "HA-INSTALL-42"
+        assert fp_post["DeviceId"] == "HA-INSTALL-42"
+        assert fp_post["AuthToken"] == "RUST_TOKEN"
+        assert fp_post["PushToken"] == "ExponentPushToken[xyz]"
+
+    def test_android_fcm_register_retries_then_succeeds(self, monkeypatch):
+        """Google's GCM register is flaky; _android_fcm_register must retry, not give up."""
+        import sys
+        import types
+        from custom_components.rustplus_assistant import auth as auth_mod
+
+        calls = {"n": 0}
+
+        class _FakeAndroidFCM:
+            @staticmethod
+            def register(*a, **k):
+                calls["n"] += 1
+                if calls["n"] < 3:
+                    raise RuntimeError("PHONE_REGISTRATION_ERROR")
+                return {"fcm": {"token": "T"}, "gcm": {"androidId": "a", "securityToken": "s"}}
+
+        fake_mod = types.ModuleType("push_receiver.android_fcm_register")
+        fake_mod.AndroidFCM = _FakeAndroidFCM
+        monkeypatch.setitem(sys.modules, "push_receiver.android_fcm_register", fake_mod)
+        monkeypatch.setattr(auth_mod.time, "sleep", lambda *_a: None)
+
+        out = auth_mod.RustPlusQRAuth._android_fcm_register(attempts=5)
+        assert out["fcm"]["token"] == "T"
+        assert calls["n"] == 3

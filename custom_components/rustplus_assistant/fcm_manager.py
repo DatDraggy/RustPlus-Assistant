@@ -245,17 +245,21 @@ class RustPlusFCMManager:
                     _LOGGER.error("Error processing FCM body: %s", e)
 
             self.hass.bus.async_fire("rustplus_notification", event_data)
-            
-            self.hass.async_create_task(
-                self.hass.services.async_call(
-                    "persistent_notification",
-                    "create",
-                    {
-                        "message": message,
-                        "title": title
-                    }
+
+            # Only surface a persistent notification when there's something to show —
+            # some pushes (e.g. the one that arrives alongside a server pairing) carry
+            # no title or message and would otherwise create an empty notification.
+            if title or message:
+                self.hass.async_create_task(
+                    self.hass.services.async_call(
+                        "persistent_notification",
+                        "create",
+                        {
+                            "message": message,
+                            "title": title,
+                        },
+                    )
                 )
-            )
 
     async def _async_auto_discover_device(self, entity_id: str, entity_type: str, entity_name: str) -> None:
         """Attempt to auto-discover which server a device belongs to."""
