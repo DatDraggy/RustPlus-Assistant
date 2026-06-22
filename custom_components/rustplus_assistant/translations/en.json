@@ -2,22 +2,53 @@
   "config": {
     "step": {
       "user": {
-        "description": "Enter the FCM credentials JSON string from the Rust+ companion browser extension.",
+        "title": "Rust+",
+        "description": "How would you like to sign in to your Rust+ account?",
+        "menu_options": {
+          "qr": "Scan a Steam QR code (recommended)",
+          "manual": "Paste FCM credentials JSON"
+        }
+      },
+      "qr": {
+        "title": "Scan with the Steam Mobile app",
+        "description": "Open the Steam Mobile app, scan the code below, and approve the sign-in — then click **Submit**.\n\n{qr_image}"
+      },
+      "qr_wait": {
+        "title": "Signing in…",
+        "description": "Waiting for approval and registering for push notifications…"
+      },
+      "qr_failed": {
+        "title": "Sign-in didn't complete",
+        "description": "The Steam QR sign-in failed or timed out. Click **Submit** to show a new code and try again."
+      },
+      "manual": {
+        "description": "Paste the FCM credentials JSON from the Rust+ companion browser extension.",
         "data": {
           "fcm_credentials": "FCM Credentials (JSON string)"
         }
       },
       "reconfigure": {
         "title": "Refresh Rust+ credentials",
-        "description": "Paste the new FCM credentials JSON from the Rust+ companion browser extension. This replaces the stored credentials for this account and reconnects the push listener. Your paired devices are kept.",
+        "description": "How would you like to refresh your account credentials? Your paired devices are kept.",
+        "menu_options": {
+          "reconfigure_qr": "Scan a Steam QR code (recommended)",
+          "reconfigure_manual": "Paste FCM credentials JSON"
+        }
+      },
+      "reconfigure_manual": {
+        "title": "Refresh Rust+ credentials",
+        "description": "Paste the new FCM credentials JSON. This replaces the stored credentials for this account and reconnects the push listener. Your paired devices are kept.",
         "data": {
           "fcm_credentials": "FCM Credentials (JSON string)"
         }
       },
       "confirm_discovery": {
         "title": "Add Rust Server",
-        "description": "A new Rust server '{name}' was paired via the Rust+ app. Do you want to add it to Home Assistant?"
+        "description": "A Rust server was paired via the Rust+ app. Do you want to add it to Home Assistant?"
       }
+    },
+    "progress": {
+      "awaiting_scan": "Waiting for you to scan the Steam QR code and approve the sign-in in the Steam Mobile app. This window stays open for a few minutes, then registers for push notifications automatically."
     },
     "error": {
       "cannot_connect": "Failed to connect",
@@ -26,6 +57,7 @@
     },
     "abort": {
       "already_configured": "Device is already configured",
+      "qr_begin_failed": "Couldn't start the Steam sign-in. Please try again.",
       "reconfigure_successful": "Credentials updated. Your paired devices were kept.",
       "reconfigure_account_only": "Only the Rust+ account entry holds FCM credentials. Reconfigure the account entry, not a server."
     }

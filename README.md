@@ -47,13 +47,29 @@ For a game-style visual grid of your Storage Monitors (item stacks plus a color-
 
 ## Configuration
 
-Once installed, configure the integration via the Home Assistant UI:
+Once installed, add the integration via the Home Assistant UI:
 
 1. Go to **Settings** > **Devices & Services**.
-2. Click **Add Integration** in the bottom right.
-3. Search for **Rust+ Assistant** and select it.
-4. Follow the setup prompts:
-   - **FCM Credentials**: Provide the FCM credentials JSON string you get from https://chromewebstore.google.com/detail/rustpluspy-link-companion/gojhnmnggbnflhdcpcemeahejhcimnlf?hl=en.
+2. Click **Add Integration** in the bottom right, then search for **Rust+ Assistant** and select it.
+3. Choose how to sign in to your Rust+ (Steam) account:
+
+#### 🔑 Scan a Steam QR code (recommended)
+
+No browser extension and no third-party website required — Home Assistant talks to Steam and Facepunch directly.
+
+1. Home Assistant shows a **QR code**.
+2. Open the **Steam Mobile app**, tap the QR-code scanner, scan the code, and **approve** the sign-in.
+3. Click **Submit**. Home Assistant finishes signing in and registers for push notifications automatically.
+
+> Your Steam password is never entered into — or seen by — Home Assistant. This is the same QR sign-in Steam uses on the desktop client; you approve it on your phone. Each Home Assistant install registers its own push device, so multiple instances (e.g. a test and a production server) can run in parallel without invalidating each other.
+
+#### 📋 Paste FCM credentials JSON (fallback)
+
+If you prefer, or if the QR sign-in isn't working for you, generate credentials with the [Rustplus.py Link Companion browser extension](https://chromewebstore.google.com/detail/rustpluspy-link-companion/gojhnmnggbnflhdcpcemeahejhcimnlf?hl=en) and paste the JSON string.
+
+### Refreshing credentials
+
+If your credentials ever stop working, open the **Rust+ Account** entry under **Settings** > **Devices & Services**, click the **⋮** menu > **Reconfigure**, and re-authenticate (Steam QR or paste JSON). Your paired devices and servers are kept.
 
 ### Pairing Devices
 
