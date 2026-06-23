@@ -718,10 +718,12 @@ class TestPlatformSetup:
 
         await async_setup_entry(hass, entry, async_add)
 
-        # Should have 4 base sensors (3 server + 1 team)
-        assert len(added) == 4
+        # 3 server + 1 server-info + 1 team + 1 in-game time
+        assert len(added) == 6
         names = [e._attr_name for e in added]
         assert "Rust+ Players Online" in names
+        assert "Rust+ Time" in names
+        assert "Rust+ Server" in names
         assert "Rust+ Players Queued" in names
         assert "Rust+ Max Players" in names
         assert "Rust+ Team Size" in names
@@ -744,8 +746,8 @@ class TestPlatformSetup:
 
         await async_setup_entry(hass, entry, async_add)
 
-        # 4 base + 1 main monitor + 4 materials + 1 upkeep = 10
-        assert len(added) == 10
+        # 6 base (3 server + server-info + team + time) + 1 monitor + 4 materials + 1 upkeep = 12
+        assert len(added) == 12
 
     @pytest.mark.asyncio
     async def test_binary_sensor_setup_creates_alarms(self):
@@ -770,8 +772,9 @@ class TestPlatformSetup:
 
         await async_setup_entry(hass, entry, async_add)
 
-        assert len(added) == 2
-        eids = {e.rust_entity_id for e in added}
+        # 1 daytime + 4 map-event sensors + 2 alarms
+        assert len(added) == 7
+        eids = {e.rust_entity_id for e in added if hasattr(e, "rust_entity_id")}
         assert eids == {1073728408, 950955033}
 
     @pytest.mark.asyncio
@@ -994,3 +997,371 @@ class TestAuth:
         out = auth_mod.RustPlusQRAuth._android_fcm_register(attempts=5)
         assert out["fcm"]["token"] == "T"
         assert calls["n"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Camera (CCTV / turret) tests
+# ---------------------------------------------------------------------------
+
+class TestCamera:
+    """Tests for camera.py entities and the options-flow turret classifier."""
+
+    @staticmethod
+    def _coordinator():
+        class _SD:
+            ip = "1.2.3.4"
+            port = 28015
+
+        class _Sock:
+            server_details = _SD()
+
+        class _Coord:
+            socket = _Sock()
+
+        return _Coord()
+
+    def test_subscribed_camera_unique_id_and_icon(self):
+        """unique_id is server-scoped + per camera id, so a 2nd server can't collide."""
+        from custom_components.rustplus_assistant.camera import RustPlusSubscribedCamera
+
+        coord = self._coordinator()
+        cctv = RustPlusSubscribedCamera(coord, None, "CAM1", {"name": "Front Door", "is_turret": False})
+        turret = RustPlusSubscribedCamera(coord, None, "CAM2", {"name": "Gate", "is_turret": True})
+
+        assert cctv.unique_id == "1.2.3.4_28015_cam_CAM1"
+        assert turret.unique_id == "1.2.3.4_28015_cam_CAM2"
+        assert cctv.unique_id != turret.unique_id
+        assert cctv.icon == "mdi:cctv"
+        assert turret.icon == "mdi:crosshairs-gps"
+        assert cctv.name == "Rust+ Front Door"
+
+    def test_subscribed_camera_defaults_name_to_id(self):
+        from custom_components.rustplus_assistant.camera import RustPlusSubscribedCamera
+
+        cam = RustPlusSubscribedCamera(self._coordinator(), None, "OILRIG1", {})
+        assert cam.name == "Rust+ OILRIG1"
+        assert cam.icon == "mdi:cctv"
+
+    def test_classify_turret_from_control_flags(self):
+        """FIRE control flag distinguishes an Auto Turret from a fixed CCTV camera."""
+        from custom_components.rustplus_assistant.config_flow import _is_turret_camera
+        from rustplus import CameraMovementOptions
+
+        class _Cam:
+            def __init__(self, flags):
+                self._flags = flags
+
+            def can_move(self, value):
+                return self._flags & value == value
+
+        fire = CameraMovementOptions.FIRE
+        mouse = CameraMovementOptions.MOUSE
+        assert _is_turret_camera(_Cam(fire | mouse)) is True   # turret
+        assert _is_turret_camera(_Cam(mouse)) is False         # PTZ CCTV
+        assert _is_turret_camera(_Cam(0)) is False             # fixed CCTV
+
+
+class TestTurretButtons:
+    """Tests for button.py — turret aim/fire control specs and entities."""
+
+    def test_control_specs(self):
+        from custom_components.rustplus_assistant.button import _controls
+        from rustplus import MovementControls
+
+        specs = _controls()
+        keys = [s[0] for s in specs]
+        assert keys == ["aim_left", "aim_right", "aim_up", "aim_down", "fire"]
+
+        by_key = {s[0]: s for s in specs}
+        # aim buttons carry a joystick nudge and no held buttons; fire is the inverse
+        assert by_key["aim_left"][4].x < 0 and by_key["aim_left"][4].y == 0
+        assert by_key["aim_right"][4].x > 0
+        assert by_key["aim_up"][4].y > 0 and by_key["aim_down"][4].y < 0
+        assert by_key["aim_left"][3] is None
+        fire = by_key["fire"]
+        assert fire[3] == [MovementControls.FIRE_PRIMARY]
+        assert fire[4] is None
+        assert fire[5] is True  # release_after -> discrete shot
+
+    def test_turret_button_unique_id_and_name(self):
+        from custom_components.rustplus_assistant.button import RustPlusTurretButton, _controls
+
+        class _SD:
+            ip = "1.2.3.4"
+            port = 28015
+
+        class _Sock:
+            server_details = _SD()
+
+        class _Coord:
+            socket = _Sock()
+
+        spec = next(s for s in _controls() if s[0] == "aim_left")
+        btn = RustPlusTurretButton(_Coord(), None, "dragoncam", "Dragon", spec)
+        assert btn.unique_id == "1.2.3.4_28015_cam_dragoncam_aim_left"
+        assert btn.name == "Rust+ Dragon Aim Left"
+
+
+class TestCameraSessionControl:
+    """Tests for the turret active-control gating in the camera session."""
+
+    @pytest.mark.asyncio
+    async def test_activate_deactivate_toggles_control(self):
+        from custom_components.rustplus_assistant.camera_session import RustPlusCameraSession
+
+        sess = RustPlusCameraSession(None, None)
+        subscribed: list[str] = []
+
+        async def _fake_ensure(cam_id, _retry=True):
+            sess._active_cam = cam_id
+            subscribed.append(cam_id)
+            return object()
+
+        async def _fake_exit():
+            sess._active_cam = None
+
+        sess._ensure_subscribed = _fake_ensure
+        sess._exit_manager = _fake_exit
+
+        assert sess.is_active("dragoncam") is False
+        await sess.activate("dragoncam")
+        assert sess.is_active("dragoncam") is True
+        assert subscribed == ["dragoncam"]
+        await sess.deactivate("dragoncam")
+        assert sess.is_active("dragoncam") is False
+
+    @pytest.mark.asyncio
+    async def test_send_movement_ignored_when_not_active(self):
+        """A button press must NOT subscribe a turret that isn't under control."""
+        from custom_components.rustplus_assistant.camera_session import RustPlusCameraSession
+
+        sess = RustPlusCameraSession(None, None)
+        called: list[str] = []
+
+        async def _fake_ensure(cam_id, _retry=True):
+            called.append(cam_id)
+            return object()
+
+        sess._ensure_subscribed = _fake_ensure
+        await sess.send_movement("dragoncam", buttons=[1024])
+        assert called == []  # not active -> no subscribe, no input sent
+
+    def test_idle_not_scheduled_while_held(self):
+        from custom_components.rustplus_assistant.camera_session import RustPlusCameraSession
+
+        sess = RustPlusCameraSession(None, None)
+        sess._held_cam = "dragoncam"
+        sess._schedule_idle()
+        assert sess._idle_handle is None
+
+    def test_control_switch_unique_id_and_name(self):
+        from custom_components.rustplus_assistant.switch import RustPlusTurretControlSwitch
+
+        class _SD:
+            ip = "1.2.3.4"
+            port = 28015
+
+        class _Sock:
+            server_details = _SD()
+
+        class _Coord:
+            socket = _Sock()
+
+        sw = RustPlusTurretControlSwitch(_Coord(), None, "dragoncam", "Dragon")
+        assert sw.unique_id == "1.2.3.4_28015_cam_dragoncam_control"
+        assert sw.name == "Rust+ Dragon Control"
+
+
+class TestCameraTypes:
+    """Tests for the cctv/ptz/turret capability model and device grouping."""
+
+    @staticmethod
+    def _coord():
+        class _SD:
+            ip = "1.2.3.4"
+            port = 28015
+
+        class _Sock:
+            server_details = _SD()
+
+        class _Coord:
+            socket = _Sock()
+
+        return _Coord()
+
+    def test_camera_type_resolution(self):
+        from custom_components.rustplus_assistant.camera import camera_type
+
+        assert camera_type({"type": "ptz"}) == "ptz"
+        assert camera_type({"type": "turret"}) == "turret"
+        assert camera_type({"type": "cctv"}) == "cctv"
+        # legacy is_turret fallback (cameras added before the type field existed)
+        assert camera_type({"is_turret": True}) == "turret"
+        assert camera_type({"is_turret": False}) == "cctv"
+        assert camera_type({}) == "cctv"
+
+    def test_ptz_controls_have_no_fire(self):
+        from custom_components.rustplus_assistant.button import _controls
+
+        keys = [s[0] for s in _controls(can_fire=False)]
+        assert keys == ["aim_left", "aim_right", "aim_up", "aim_down"]
+
+    def test_ptz_controllable_cctv_not(self):
+        from custom_components.rustplus_assistant.camera import RustPlusSubscribedCamera
+
+        ptz = RustPlusSubscribedCamera(self._coord(), None, "cam", {"type": "ptz", "name": "P"})
+        cctv = RustPlusSubscribedCamera(self._coord(), None, "cam2", {"type": "cctv", "name": "C"})
+        assert ptz._controllable is True
+        assert cctv._controllable is False
+
+    def test_camera_device_info_groups_entities(self):
+        from custom_components.rustplus_assistant.camera import camera_device_info
+        from custom_components.rustplus_assistant.const import DOMAIN
+
+        di = camera_device_info(self._coord(), "dragoncam", {"name": "Dragon", "type": "turret"})
+        assert (DOMAIN, "1.2.3.4_28015_cam_dragoncam") in di["identifiers"]
+        assert di["model"] == "Auto Turret"
+        assert di["via_device"] == (DOMAIN, "1.2.3.4_28015")
+
+
+class TestTimeSensors:
+    """Tests for the in-game time sensor and daytime binary_sensor."""
+
+    @staticmethod
+    def _coord(time_obj=None):
+        class _SD:
+            ip = "1.2.3.4"
+            port = 28015
+
+        class _Sock:
+            server_details = _SD()
+
+        class _Coord:
+            socket = _Sock()
+            data = {"time": time_obj} if time_obj is not None else {}
+
+        return _Coord()
+
+    @staticmethod
+    def _time(time, sunrise="07:00", sunset="19:00"):
+        class _T:
+            pass
+
+        t = _T()
+        t.time, t.sunrise, t.sunset = time, sunrise, sunset
+        t.day_length, t.time_scale, t.raw_time = 60.0, 1.0, 0.0
+        return t
+
+    def test_to_hours(self):
+        from custom_components.rustplus_assistant.binary_sensor import _to_hours
+
+        assert _to_hours("07:30") == 7.5
+        assert _to_hours("13:45") == 13.75
+        assert _to_hours(12.0) == 12.0
+        assert _to_hours(None) is None
+        assert _to_hours("garbage") is None
+
+    def test_daytime_day_night_unknown(self):
+        from custom_components.rustplus_assistant.binary_sensor import RustPlusDaytimeBinarySensor
+
+        day = RustPlusDaytimeBinarySensor(self._coord(self._time("12:00")))
+        assert day.is_on is True
+        assert day.icon == "mdi:weather-sunny"
+
+        night = RustPlusDaytimeBinarySensor(self._coord(self._time("22:00")))
+        assert night.is_on is False
+        assert night.icon == "mdi:weather-night"
+
+        unknown = RustPlusDaytimeBinarySensor(self._coord())
+        assert unknown.is_on is None
+
+    def test_time_sensor_value_and_attrs(self):
+        from custom_components.rustplus_assistant.sensor import RustPlusTimeSensor
+
+        s = RustPlusTimeSensor(self._coord(self._time("13:45")))
+        assert s.native_value == "13:45"
+        assert s.unique_id == "1.2.3.4_28015_time"
+        attrs = s.extra_state_attributes
+        assert attrs["sunrise"] == "07:00"
+        assert attrs["sunset"] == "19:00"
+
+    def test_server_info_sensor(self):
+        """The server-info sensor exposes the metadata the server card reads."""
+        from custom_components.rustplus_assistant.sensor import RustPlusServerInfoSensor
+
+        class _Info:
+            name, url, map = "My Server", "http://x", "Procedural Map"
+            size, seed, wipe_time = 4000, 12345, 1700000000
+            header_image, logo_image = "h.png", "l.png"
+            players, max_players, queued_players = 100, 200, 5
+
+        class _SD:
+            ip, port = "1.2.3.4", 28015
+
+        class _Sock:
+            server_details = _SD()
+
+        class _Coord:
+            socket = _Sock()
+            data = {"info": _Info()}
+
+        s = RustPlusServerInfoSensor(_Coord())
+        assert s.native_value == "My Server"
+        assert s.unique_id == "1.2.3.4_28015_server_info"
+        a = s.extra_state_attributes
+        assert a["map"] == "Procedural Map"
+        assert a["map_size"] == 4000
+        assert a["seed"] == 12345
+        assert a["wipe_time"] == 1700000000
+        assert a["header_image"] == "h.png" and a["logo_image"] == "l.png"
+        assert (a["players"], a["max_players"], a["queued_players"]) == (100, 200, 5)
+
+
+class TestMapEvents:
+    """Tests for the map-event binary sensors and the annotated map camera."""
+
+    @staticmethod
+    def _coord(markers="__unset__"):
+        class _SD:
+            ip = "1.2.3.4"
+            port = 28015
+
+        class _Sock:
+            server_details = _SD()
+
+        class _Coord:
+            socket = _Sock()
+            data = {} if markers == "__unset__" else {"markers": markers}
+
+        return _Coord()
+
+    def test_event_sensor_presence(self):
+        from custom_components.rustplus_assistant.binary_sensor import RustPlusEventBinarySensor
+        from rustplus import RustMarker
+
+        class _M:
+            def __init__(self, t):
+                self.type = t
+
+        coord = self._coord([_M(RustMarker.CargoShipMarker), _M(RustMarker.VendingMachineMarker)])
+        cargo = RustPlusEventBinarySensor(
+            coord, "cargo_ship", "Cargo Ship", RustMarker.CargoShipMarker, "mdi:ferry"
+        )
+        heli = RustPlusEventBinarySensor(
+            coord, "patrol_helicopter", "Patrol Helicopter", RustMarker.PatrolHelicopterMarker, "mdi:helicopter"
+        )
+        assert cargo.is_on is True
+        assert heli.is_on is False
+        assert cargo.unique_id == "1.2.3.4_28015_event_cargo_ship"
+
+        # no marker data yet -> unknown, not "off"
+        assert RustPlusEventBinarySensor(
+            self._coord(), "cargo_ship", "Cargo Ship", RustMarker.CargoShipMarker, "mdi:ferry"
+        ).is_on is None
+
+    def test_annotated_map_camera(self):
+        from custom_components.rustplus_assistant.camera import RustPlusAnnotatedMapCamera
+
+        cam = RustPlusAnnotatedMapCamera(self._coord())
+        assert cam.unique_id == "1.2.3.4_28015_map_annotated"
+        assert cam.name == "Rust+ Map (Events)"

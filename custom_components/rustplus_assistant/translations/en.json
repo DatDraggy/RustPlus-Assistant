@@ -62,6 +62,39 @@
       "reconfigure_account_only": "Only the Rust+ account entry holds FCM credentials. Reconfigure the account entry, not a server."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Rust+ Cameras",
+        "menu_options": {
+          "add_camera": "Add a camera",
+          "remove_camera": "Remove a camera"
+        }
+      },
+      "add_camera": {
+        "title": "Add a Rust+ camera",
+        "description": "Enter the camera identifier you set at an in-game Computer Station (e.g. `OILRIG1`). The type is auto-detected, but you can force it: `cctv` = view only, `ptz` = view + aim (no fire), `turret` = view + aim + fire.",
+        "data": {
+          "camera_id": "Camera identifier",
+          "name": "Friendly name (optional)",
+          "camera_type": "Type (auto / cctv / turret)"
+        }
+      },
+      "remove_camera": {
+        "title": "Remove Rust+ cameras",
+        "data": {
+          "cameras": "Cameras to remove"
+        }
+      }
+    },
+    "error": {
+      "camera_not_found": "No camera with that identifier is accessible. Check the ID, and that the camera or turret is powered and within range.",
+      "unknown": "Unexpected error while validating the camera."
+    },
+    "abort": {
+      "not_a_server": "Camera options are only available on Rust+ server entries."
+    }
+  },
   "issues": {
     "device_paired": {
       "title": "Rust+ Device Paired: {name}",
