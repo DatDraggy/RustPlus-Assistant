@@ -45,6 +45,21 @@ class RustPlusDataCoordinator(DataUpdateCoordinator):
                     await self.socket.connect()
                     reconnected = True
                 info = await self.socket.get_info()
+                if type(info).__name__ == "RustError":
+                    # The socket dropped abnormally (e.g. server closed it during a
+                    # camera subscription) but rustplus doesn't reset ws.open after a
+                    # close with no close-frame, so the check above misses it and every
+                    # send silently fails. Force a clean reconnect, then retry.
+                    _LOGGER.warning(
+                        "Rust+ connection looks dead (get_info failed); reconnecting."
+                    )
+                    try:
+                        await self.socket.disconnect()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    await self.socket.connect()
+                    reconnected = True
+                    info = await self.socket.get_info()
                 time = await self.socket.get_time()
     
                 # Get Team Info
@@ -53,6 +68,16 @@ class RustPlusDataCoordinator(DataUpdateCoordinator):
                 except Exception as e:
                     _LOGGER.debug("Failed to get team info (possibly not in a team): %s", e)
                     team_info = None
+
+                # Map markers (cargo, heli, CH47, crates, vendors, ...) — powers
+                # the event binary sensors (and, later, an overlay card).
+                try:
+                    markers = await self.socket.get_markers()
+                    if type(markers).__name__ == "RustError":
+                        markers = None
+                except Exception as e:
+                    _LOGGER.debug("Failed to get map markers: %s", e)
+                    markers = None
                 
             # After a reconnect the server forgets our entity-event
             # subscriptions, so re-affirm them (alarms rely on these events).
@@ -68,7 +93,13 @@ class RustPlusDataCoordinator(DataUpdateCoordinator):
                 except Exception as e:
                     _LOGGER.debug("Failed to get entity info for %s: %s", eid, e)
 
-            return {"info": info, "time": time, "team_info": team_info, "entities": entity_states}
+            return {
+                "info": info,
+                "time": time,
+                "team_info": team_info,
+                "markers": markers,
+                "entities": entity_states,
+            }
         except Exception as err:
             raise UpdateFailed(f"Error communicating with Rust+: {err}") from err
 

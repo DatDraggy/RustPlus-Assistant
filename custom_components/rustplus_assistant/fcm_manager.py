@@ -326,9 +326,9 @@ class RustPlusFCMManager:
                                 }
                             )
                             
-                            self.hass.async_create_task(
-                                self.hass.config_entries.async_reload(entry.entry_id)
-                            )
+                            # The async_update_entry above changes options, which
+                            # fires the entry's update listener and reloads it so
+                            # the new device entity is created.
                             return
                     except Exception as err:
                         _LOGGER.error("Failed to query entity info for entity %s on server '%s': %s", entity_id, entry.title, err)

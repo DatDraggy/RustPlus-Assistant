@@ -7,11 +7,41 @@ from homeassistant.components.binary_sensor import BinarySensorEntity, BinarySen
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from rustplus import RustMarker
+
+from .camera import server_device_info
 from .const import DOMAIN
+from .coordinator import RustPlusDataCoordinator
 from .entity import RustPlusEntity
 
 _LOGGER = logging.getLogger(__name__)
+
+# (key, friendly name, marker type, icon) for the recurring in-game events.
+_MAP_EVENTS = [
+    ("cargo_ship", "Cargo Ship", RustMarker.CargoShipMarker, "mdi:ferry"),
+    ("patrol_helicopter", "Patrol Helicopter", RustMarker.PatrolHelicopterMarker, "mdi:helicopter"),
+    ("ch47_chinook", "CH47 Chinook", RustMarker.ChinookMarker, "mdi:helicopter"),
+    ("traveling_vendor", "Traveling Vendor", RustMarker.TravelingVendor, "mdi:truck-delivery"),
+]
+
+
+def _to_hours(value) -> float | None:
+    """Convert a Rust time value ('HH:MM' or a number) to float hours."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    try:
+        if ":" in s:
+            h, m = s.split(":")[:2]
+            return int(h) + int(m) / 60.0
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -22,12 +52,69 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator = data["coordinator"]
 
-    entities_to_add = []
+    entities_to_add = [RustPlusDaytimeBinarySensor(coordinator)]
+    for key, name, marker_type, icon in _MAP_EVENTS:
+        entities_to_add.append(
+            RustPlusEventBinarySensor(coordinator, key, name, marker_type, icon)
+        )
+
     paired_alarms = entry.options.get("smart_alarms", {})
     for eid, name in paired_alarms.items():
         entities_to_add.append(RustPlusSmartAlarm(coordinator, int(eid), name))
 
     async_add_entities(entities_to_add)
+
+
+class RustPlusEventBinarySensor(CoordinatorEntity[RustPlusDataCoordinator], BinarySensorEntity):
+    """On while a given map event (Cargo Ship, Patrol Heli, ...) is on the map."""
+
+    def __init__(self, coordinator: RustPlusDataCoordinator, key: str, name: str, marker_type: int, icon: str) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        sd = coordinator.socket.server_details
+        self._marker_type = marker_type
+        self._attr_name = f"Rust+ {name}"
+        self._attr_unique_id = f"{sd.ip}_{sd.port}_event_{key}"
+        self._attr_icon = icon
+        self._attr_device_info = server_device_info(coordinator)
+
+    @property
+    def is_on(self) -> bool | None:
+        """Whether at least one marker of this event type is present."""
+        markers = (self.coordinator.data or {}).get("markers")
+        if markers is None:
+            return None
+        return any(getattr(m, "type", None) == self._marker_type for m in markers)
+
+
+class RustPlusDaytimeBinarySensor(CoordinatorEntity[RustPlusDataCoordinator], BinarySensorEntity):
+    """On during the in-game day (between sunrise and sunset)."""
+
+    def __init__(self, coordinator: RustPlusDataCoordinator) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        sd = coordinator.socket.server_details
+        self._attr_name = "Rust+ Daytime"
+        self._attr_unique_id = f"{sd.ip}_{sd.port}_daytime"
+        self._attr_device_info = server_device_info(coordinator)
+
+    @property
+    def is_on(self) -> bool | None:
+        """Whether it is currently daytime in-game."""
+        t = (self.coordinator.data or {}).get("time")
+        if t is None:
+            return None
+        now = _to_hours(getattr(t, "time", None))
+        sunrise = _to_hours(getattr(t, "sunrise", None))
+        sunset = _to_hours(getattr(t, "sunset", None))
+        if now is None or sunrise is None or sunset is None:
+            return None
+        return sunrise <= now < sunset
+
+    @property
+    def icon(self) -> str:
+        """Sun when it's day, moon when it's night."""
+        return "mdi:weather-sunny" if self.is_on else "mdi:weather-night"
 
 class RustPlusSmartAlarm(RustPlusEntity, BinarySensorEntity):
     """Representation of a Rust+ Smart Alarm.

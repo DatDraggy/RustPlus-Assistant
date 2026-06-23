@@ -12,10 +12,10 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import instance_id
+from homeassistant.helpers import config_validation as cv, instance_id
 
 from .const import DOMAIN
 
@@ -31,6 +31,18 @@ STEP_DISCOVERY_SCHEMA = vol.Schema({})
 
 # How long to wait for the user to scan + approve the Steam QR code (seconds).
 QR_TIMEOUT = 280
+
+
+def _is_turret_camera(cam) -> bool:
+    """Classify a subscribed camera as a turret (vs a fixed CCTV camera).
+
+    Rust+ has no explicit camera-type field, but an Auto Turret reports the FIRE
+    control flag in its subscribe info while a fixed CCTV camera does not, so the
+    flag is a reliable proxy.
+    """
+    from rustplus import CameraMovementOptions
+
+    return cam.can_move(CameraMovementOptions.FIRE)
 
 
 def _qr_data_uri(challenge: str) -> str:
@@ -66,6 +78,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._device_id: str | None = None
         self._reconfigure_entry = None
         self.discovery_info: dict | None = None
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Camera management lives in the options flow (server entries only)."""
+        return RustPlusOptionsFlow()
 
     # ----------------------------------------------------------------- entry #
     async def async_step_user(
@@ -257,3 +277,116 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class InvalidAuth(HomeAssistantError):
     """Error to indicate there is invalid auth."""
+
+
+class CameraNotFound(HomeAssistantError):
+    """Raised when a camera identifier can't be subscribed to."""
+
+
+class RustPlusOptionsFlow(config_entries.OptionsFlow):
+    """Manage CCTV / turret cameras on a Rust+ server entry."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Top-level menu: add or remove a camera."""
+        if "server_ip" not in self.config_entry.data:
+            # The account entry has nothing camera-related to configure.
+            return self.async_abort(reason="not_a_server")
+        menu = ["add_camera"]
+        if self.config_entry.options.get("cameras"):
+            menu.append("remove_camera")
+        return self.async_show_menu(step_id="init", menu_options=menu)
+
+    async def async_step_add_camera(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Add a camera by its in-game identifier; validate, then classify it.
+
+        Type is auto-detected (FIRE control flag ⇒ turret) but can be overridden,
+        since some aimable CCTV cameras also report fire-capable.
+        """
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            cam_id = user_input["camera_id"].strip()
+            name = (user_input.get("name") or "").strip() or cam_id
+            cam_type = user_input.get("camera_type", "auto")
+            try:
+                detected = await self._validate_and_classify(cam_id)
+            except CameraNotFound:
+                errors["base"] = "camera_not_found"
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception("Camera validation failed")
+                errors["base"] = "unknown"
+            else:
+                if cam_type == "auto":
+                    resolved = "turret" if detected else "cctv"
+                else:
+                    resolved = cam_type
+                cameras = dict(self.config_entry.options.get("cameras") or {})
+                cameras[cam_id] = {"name": name, "type": resolved}
+                return self._save(cameras)
+
+        return self.async_show_form(
+            step_id="add_camera",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("camera_id"): str,
+                    vol.Optional("name"): str,
+                    vol.Optional("camera_type", default="auto"): vol.In(
+                        ["auto", "cctv", "ptz", "turret"]
+                    ),
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_remove_camera(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Remove one or more configured cameras."""
+        cameras = dict(self.config_entry.options.get("cameras") or {})
+        if not cameras:
+            return await self.async_step_init()
+        if user_input is not None:
+            for cam_id in user_input.get("cameras", []):
+                cameras.pop(cam_id, None)
+            return self._save(cameras)
+
+        choices = {cid: (meta.get("name") or cid) for cid, meta in cameras.items()}
+        return self.async_show_form(
+            step_id="remove_camera",
+            data_schema=vol.Schema({vol.Required("cameras"): cv.multi_select(choices)}),
+        )
+
+    async def _validate_and_classify(self, cam_id: str) -> bool:
+        """Subscribe once to confirm the id exists and detect turret vs CCTV.
+
+        Returns True for a turret. Raises CameraNotFound if the server has no such
+        camera (or it's out of range / unpowered).
+        """
+        data = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
+        coordinator = data.get("coordinator") if data else None
+        if coordinator is None:
+            raise CameraNotFound
+
+        async with coordinator.api_lock:
+            socket = coordinator.socket
+            if not getattr(socket.ws, "open", False):
+                await socket.connect()
+            cam = await socket.get_camera_manager(cam_id)
+            if type(cam).__name__ == "RustError":
+                raise CameraNotFound
+            try:
+                return _is_turret_camera(cam)
+            finally:
+                try:
+                    await cam.exit_camera()
+                except Exception:  # pylint: disable=broad-except
+                    pass
+
+    def _save(self, cameras: dict) -> FlowResult:
+        """Persist the camera set; the update listener reloads to (un)spawn entities."""
+        new_options = dict(self.config_entry.options)
+        new_options["cameras"] = cameras
+        return self.async_create_entry(title="", data=new_options)

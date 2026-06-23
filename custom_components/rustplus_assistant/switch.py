@@ -31,7 +31,61 @@ async def async_setup_entry(
     for eid, name in paired_switches.items():
         entities_to_add.append(RustPlusSmartSwitch(coordinator, int(eid), name))
 
+    # One "Control" switch per turret camera — taking control holds the camera
+    # subscription (which disables the turret's auto-aim), so it's opt-in.
+    session = data.get("camera_session")
+    if session is not None:
+        from .camera import CONTROLLABLE_TYPES, camera_device_info, camera_type
+
+        for cam_id, meta in (entry.options.get("cameras") or {}).items():
+            meta = meta if isinstance(meta, dict) else {}
+            if camera_type(meta) in CONTROLLABLE_TYPES:
+                cam_name = meta.get("name") or cam_id
+                entities_to_add.append(
+                    RustPlusTurretControlSwitch(
+                        coordinator, session, cam_id, cam_name,
+                        camera_device_info(coordinator, cam_id, meta),
+                    )
+                )
+
     async_add_entities(entities_to_add)
+
+
+class RustPlusTurretControlSwitch(SwitchEntity):
+    """Takes manual control of a controllable camera (turret/ptz).
+
+    On = subscribed/controlled (live feed + aim/fire buttons work); off = released.
+    For a turret, control disables its auto-aim, so this is opt-in. State is
+    intentionally not restored across restarts — after a restart the camera is left
+    alone (a turret auto-aims) until you take control again.
+    """
+
+    _attr_icon = "mdi:remote"
+
+    def __init__(self, coordinator, session, cam_id: str, cam_name: str, device_info=None) -> None:
+        """Initialize."""
+        self._session = session
+        self._cam_id = cam_id
+        server_ip = coordinator.socket.server_details.ip
+        server_port = coordinator.socket.server_details.port
+        self._attr_name = f"Rust+ {cam_name} Control"
+        self._attr_unique_id = f"{server_ip}_{server_port}_cam_{cam_id}_control"
+        self._attr_device_info = device_info
+
+    @property
+    def is_on(self) -> bool:
+        """Whether the turret is currently under active control."""
+        return self._session.is_active(self._cam_id)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Take control of the turret (holds the subscription open)."""
+        await self._session.activate(self._cam_id)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Release control so the turret resumes auto-aim."""
+        await self._session.deactivate(self._cam_id)
+        self.async_write_ha_state()
 
 class RustPlusSmartSwitch(RustPlusEntity, SwitchEntity):
     """Representation of a Rust+ Smart Switch.

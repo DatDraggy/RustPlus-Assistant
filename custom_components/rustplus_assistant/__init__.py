@@ -6,16 +6,18 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
 
 from rustplus import RustSocket, ServerDetails
 
+from .camera_session import RustPlusCameraSession
 from .const import DOMAIN
 from .coordinator import RustPlusDataCoordinator
 from .fcm_manager import RustPlusFCMManager
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[str] = ["switch", "sensor", "binary_sensor", "event", "camera"]
+PLATFORMS: list[str] = ["switch", "sensor", "binary_sensor", "event", "camera", "button"]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Rust+ from a config entry."""
@@ -85,11 +87,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = {
         "socket": socket,
         "coordinator": coordinator,
+        # Cameras stream on their own isolated socket so they can't take down the
+        # data socket (map/poll/events); created lazily on first use.
+        "camera_session": RustPlusCameraSession(hass, server_details),
         "type": "server"
     }
 
+    # Register the per-server hub device so the map, cameras and paired devices
+    # nest under it (their device_info points here via `via_device`).
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, f"{server_ip}_{server_port}")},
+        name=entry.title,
+        manufacturer="Facepunch",
+        model="Rust Server",
+    )
+
+    # Reload when options change (e.g. a camera is added/removed, or a device is
+    # auto-discovered on pairing) so the affected entities are (re)created.
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload a server entry after its options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
@@ -102,6 +125,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         data = hass.data[DOMAIN].pop(entry.entry_id)
+        camera_session = data.get("camera_session")
+        if camera_session is not None:
+            await camera_session.close()
         socket = data["socket"]
         await socket.disconnect()
 

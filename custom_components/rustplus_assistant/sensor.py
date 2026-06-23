@@ -14,6 +14,7 @@ from homeassistant.core import callback
 
 from rustplus.utils import translate_id_to_stack
 
+from .camera import server_device_info
 from .const import DOMAIN
 from .entity import RustPlusEntity
 from .coordinator import RustPlusDataCoordinator
@@ -36,8 +37,15 @@ async def async_setup_entry(
     entities_to_add.append(RustPlusServerSensor(coordinator, "queued_players", "Players Queued"))
     entities_to_add.append(RustPlusServerSensor(coordinator, "max_players", "Max Players"))
 
+    # Server metadata (name, map, seed, wipe time, banner images, …) as a single
+    # sensor — the Server Status card reads it all from here.
+    entities_to_add.append(RustPlusServerInfoSensor(coordinator))
+
     # Add Team Sensor
     entities_to_add.append(RustPlusTeamSensor(coordinator))
+
+    # In-game time of day
+    entities_to_add.append(RustPlusTimeSensor(coordinator))
 
     # Add paired Storage Monitors
     paired_monitors = entry.options.get("storage_monitors", {})
@@ -66,6 +74,7 @@ class RustPlusServerSensor(CoordinatorEntity[RustPlusDataCoordinator], SensorEnt
         self._attr_unique_id = f"{server_ip}_{server_port}_{sensor_type}"
         self._attr_native_unit_of_measurement = "players"
         self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_device_info = server_device_info(coordinator)
 
     @property
     def native_value(self):
@@ -75,6 +84,50 @@ class RustPlusServerSensor(CoordinatorEntity[RustPlusDataCoordinator], SensorEnt
 
         info = self.coordinator.data["info"]
         return getattr(info, self.sensor_type, None)
+
+class RustPlusServerInfoSensor(CoordinatorEntity[RustPlusDataCoordinator], SensorEntity):
+    """Server metadata in one entity.
+
+    State is the server name; the rest of the ``info`` payload (map, size, seed,
+    wipe time, player counts and the Facepunch banner/logo image URLs) is exposed
+    as attributes so a single card can render a full server-status banner.
+    """
+
+    _attr_icon = "mdi:server"
+
+    def __init__(self, coordinator: RustPlusDataCoordinator) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        sd = coordinator.socket.server_details
+        self._attr_name = "Rust+ Server"
+        self._attr_unique_id = f"{sd.ip}_{sd.port}_server_info"
+        self._attr_device_info = server_device_info(coordinator)
+
+    @property
+    def native_value(self):
+        """Return the server name."""
+        info = (self.coordinator.data or {}).get("info")
+        return getattr(info, "name", None) if info else None
+
+    @property
+    def extra_state_attributes(self):
+        """Expose the full server info payload for the Server Status card."""
+        info = (self.coordinator.data or {}).get("info")
+        if not info:
+            return {}
+        return {
+            "url": getattr(info, "url", None),
+            "map": getattr(info, "map", None),
+            "map_size": getattr(info, "size", None),
+            "seed": getattr(info, "seed", None),
+            "wipe_time": getattr(info, "wipe_time", None),
+            "header_image": getattr(info, "header_image", None),
+            "logo_image": getattr(info, "logo_image", None),
+            "players": getattr(info, "players", None),
+            "max_players": getattr(info, "max_players", None),
+            "queued_players": getattr(info, "queued_players", None),
+        }
+
 
 class RustPlusTeamSensor(CoordinatorEntity[RustPlusDataCoordinator], SensorEntity):
     """Representation of a Rust+ Team Sensor."""
@@ -89,6 +142,7 @@ class RustPlusTeamSensor(CoordinatorEntity[RustPlusDataCoordinator], SensorEntit
         self._attr_unique_id = f"{server_ip}_{server_port}_team_size"
         self._attr_native_unit_of_measurement = "members"
         self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_device_info = server_device_info(coordinator)
 
     @property
     def native_value(self):
@@ -98,6 +152,40 @@ class RustPlusTeamSensor(CoordinatorEntity[RustPlusDataCoordinator], SensorEntit
 
         team_info = self.coordinator.data["team_info"]
         return len(team_info.members) if team_info.members else 0
+
+class RustPlusTimeSensor(CoordinatorEntity[RustPlusDataCoordinator], SensorEntity):
+    """The in-game time of day (e.g. ``13:45``)."""
+
+    _attr_icon = "mdi:clock-time-four-outline"
+
+    def __init__(self, coordinator: RustPlusDataCoordinator) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        sd = coordinator.socket.server_details
+        self._attr_name = "Rust+ Time"
+        self._attr_unique_id = f"{sd.ip}_{sd.port}_time"
+        self._attr_device_info = server_device_info(coordinator)
+
+    @property
+    def native_value(self):
+        """Return the in-game clock string."""
+        t = (self.coordinator.data or {}).get("time")
+        return getattr(t, "time", None) if t else None
+
+    @property
+    def extra_state_attributes(self):
+        """Expose sunrise/sunset and the day-length scaling."""
+        t = (self.coordinator.data or {}).get("time")
+        if not t:
+            return {}
+        return {
+            "sunrise": getattr(t, "sunrise", None),
+            "sunset": getattr(t, "sunset", None),
+            "day_length": getattr(t, "day_length", None),
+            "time_scale": getattr(t, "time_scale", None),
+            "raw_time": getattr(t, "raw_time", None),
+        }
+
 
 class RustPlusStorageMonitor(RustPlusEntity, SensorEntity):
     """Representation of a Rust+ Storage Monitor."""
