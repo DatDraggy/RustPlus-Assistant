@@ -9,22 +9,13 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from rustplus import RustMarker
-
 from .camera import server_device_info
 from .const import DOMAIN
 from .coordinator import RustPlusDataCoordinator
 from .entity import RustPlusEntity
+from .event_cadence import MAP_EVENTS, get_event_trackers
 
 _LOGGER = logging.getLogger(__name__)
-
-# (key, friendly name, marker type, icon) for the recurring in-game events.
-_MAP_EVENTS = [
-    ("cargo_ship", "Cargo Ship", RustMarker.CargoShipMarker, "mdi:ferry"),
-    ("patrol_helicopter", "Patrol Helicopter", RustMarker.PatrolHelicopterMarker, "mdi:helicopter"),
-    ("ch47_chinook", "CH47 Chinook", RustMarker.ChinookMarker, "mdi:helicopter"),
-    ("traveling_vendor", "Traveling Vendor", RustMarker.TravelingVendor, "mdi:truck-delivery"),
-]
 
 
 def _to_hours(value) -> float | None:
@@ -52,10 +43,11 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator = data["coordinator"]
 
+    trackers = get_event_trackers(hass, entry.entry_id)
     entities_to_add = [RustPlusDaytimeBinarySensor(coordinator)]
-    for key, name, marker_type, icon in _MAP_EVENTS:
+    for key, name, marker_type, icon in MAP_EVENTS:
         entities_to_add.append(
-            RustPlusEventBinarySensor(coordinator, key, name, marker_type, icon)
+            RustPlusEventBinarySensor(coordinator, key, name, marker_type, icon, trackers[key])
         )
 
     paired_alarms = entry.options.get("smart_alarms", {})
@@ -68,12 +60,15 @@ async def async_setup_entry(
 class RustPlusEventBinarySensor(CoordinatorEntity[RustPlusDataCoordinator], BinarySensorEntity):
     """On while a given map event (Cargo Ship, Patrol Heli, ...) is on the map."""
 
-    def __init__(self, coordinator: RustPlusDataCoordinator, key: str, name: str, marker_type: int, icon: str) -> None:
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: RustPlusDataCoordinator, key: str, name: str, marker_type: int, icon: str, tracker) -> None:
         """Initialize."""
         super().__init__(coordinator)
         sd = coordinator.socket.server_details
         self._marker_type = marker_type
-        self._attr_name = f"Rust+ {name}"
+        self._tracker = tracker
+        self._attr_name = name
         self._attr_unique_id = f"{sd.ip}_{sd.port}_event_{key}"
         self._attr_icon = icon
         self._attr_device_info = server_device_info(coordinator)
@@ -81,20 +76,37 @@ class RustPlusEventBinarySensor(CoordinatorEntity[RustPlusDataCoordinator], Bina
     @property
     def is_on(self) -> bool | None:
         """Whether at least one marker of this event type is present."""
-        markers = (self.coordinator.data or {}).get("markers")
-        if markers is None:
-            return None
-        return any(getattr(m, "type", None) == self._marker_type for m in markers)
+        return self._tracker.event_present((self.coordinator.data or {}).get("markers"))
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Record spawn rising edges before writing state."""
+        self._tracker.observe((self.coordinator.data or {}).get("markers"))
+        super()._handle_coordinator_update()
+
+    @property
+    def extra_state_attributes(self):
+        """Surface the next-occurrence estimate alongside the live state."""
+        nxt = self._tracker.next_estimate
+        cadence = self._tracker.cadence
+        return {
+            "name": self._attr_name,
+            "next_estimated": nxt.isoformat() if nxt else None,
+            "cadence_minutes": round(cadence.total_seconds() / 60, 1) if cadence else None,
+            "samples": self._tracker.sample_count,
+        }
 
 
 class RustPlusDaytimeBinarySensor(CoordinatorEntity[RustPlusDataCoordinator], BinarySensorEntity):
     """On during the in-game day (between sunrise and sunset)."""
 
+    _attr_has_entity_name = True
+
     def __init__(self, coordinator: RustPlusDataCoordinator) -> None:
         """Initialize."""
         super().__init__(coordinator)
         sd = coordinator.socket.server_details
-        self._attr_name = "Rust+ Daytime"
+        self._attr_name = "Daytime"
         self._attr_unique_id = f"{sd.ip}_{sd.port}_daytime"
         self._attr_device_info = server_device_info(coordinator)
 

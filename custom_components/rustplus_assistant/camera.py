@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import time
 
 from homeassistant.components.camera import Camera
@@ -20,6 +21,11 @@ _LOGGER = logging.getLogger(__name__)
 # The camera session holds its subscription open between calls, so this just
 # bounds how often a single entity asks for a fresh ~2s-accumulated frame.
 _MIN_REFRESH_SECONDS = 5.0
+
+# While a turret/PTZ is under active control (Control on, subscription held open),
+# refresh much faster so aiming feels responsive — the user is watching the feed
+# react to each move press, so latency matters more than maximum de-noising.
+_ACTIVE_REFRESH_SECONDS = 0.4
 
 # The annotated map (get_map) fetches markers + team + Steam avatars and composites
 # them, so it's heavy — only re-render it this often.
@@ -44,8 +50,23 @@ def camera_type(meta) -> str:
     return "turret" if meta.get("is_turret") else "cctv"
 
 
+def server_label(coordinator: RustPlusDataCoordinator) -> str:
+    """Short, server-unique label used as the per-server device name and the
+    entity_id prefix (so entities don't collide across multiple servers).
+
+    Derived from the config-entry title: strip ``[..]`` tags and anything after
+    the first separator (e.g. ``[EU] TideRust |Solo/Duo...`` -> ``TideRust``).
+    """
+    entry = getattr(coordinator, "config_entry", None)
+    raw = getattr(entry, "title", None) if entry is not None else None
+    title = raw if isinstance(raw, str) else ""
+    cleaned = re.sub(r"\[[^\]]*\]", "", title)
+    cleaned = re.split(r"[|/\\]", cleaned)[0].strip()
+    return cleaned or title.strip() or str(coordinator.socket.server_details.ip)
+
+
 def server_device_info(coordinator: RustPlusDataCoordinator) -> DeviceInfo:
-    """DeviceInfo for the per-server hub device."""
+    """DeviceInfo for the per-server hub device (name set on registration)."""
     sd = coordinator.socket.server_details
     return DeviceInfo(identifiers={(DOMAIN, f"{sd.ip}_{sd.port}")})
 
@@ -56,7 +77,7 @@ def camera_device_info(coordinator: RustPlusDataCoordinator, cam_id: str, meta) 
     name = (meta or {}).get("name") or cam_id
     return DeviceInfo(
         identifiers={(DOMAIN, f"{sd.ip}_{sd.port}_cam_{cam_id}")},
-        name=f"Rust+ {name}",
+        name=f"{server_label(coordinator)} {name}",
         manufacturer="Facepunch",
         model=_MODELS.get(camera_type(meta), "Camera"),
         via_device=(DOMAIN, f"{sd.ip}_{sd.port}"),
@@ -121,6 +142,8 @@ async def async_setup_entry(
 class RustPlusMapCamera(Camera):
     """Representation of the Rust+ server map as a camera."""
 
+    _attr_has_entity_name = True
+
     def __init__(self, coordinator: RustPlusDataCoordinator) -> None:
         """Initialize."""
         super().__init__()
@@ -128,7 +151,7 @@ class RustPlusMapCamera(Camera):
 
         server_ip = coordinator.socket.server_details.ip
         server_port = coordinator.socket.server_details.port
-        self._attr_name = "Rust+ Map"
+        self._attr_name = "Map"
         self._attr_unique_id = f"{server_ip}_{server_port}_map"
         self._attr_is_on = True
         self._attr_device_info = server_device_info(coordinator)
@@ -163,12 +186,14 @@ class RustPlusAnnotatedMapCamera(Camera):
     teammates drawn on by the library (`get_map`). Heavier than the plain map, so
     it renders at most once a minute."""
 
+    _attr_has_entity_name = True
+
     def __init__(self, coordinator: RustPlusDataCoordinator) -> None:
         """Initialize."""
         super().__init__()
         self.coordinator = coordinator
         sd = coordinator.socket.server_details
-        self._attr_name = "Rust+ Map (Events)"
+        self._attr_name = "Map (Events)"
         self._attr_unique_id = f"{sd.ip}_{sd.port}_map_annotated"
         self._attr_icon = "mdi:map-marker-radius"
         self._attr_device_info = server_device_info(coordinator)
@@ -213,6 +238,8 @@ class RustPlusSubscribedCamera(Camera):
     calls and lets ray samples accumulate, so the image isn't pixelated.
     """
 
+    _attr_has_entity_name = True
+
     def __init__(
         self,
         coordinator: RustPlusDataCoordinator,
@@ -228,11 +255,12 @@ class RustPlusSubscribedCamera(Camera):
         meta = meta if isinstance(meta, dict) else {}
         ctype = camera_type(meta)
         self._controllable = ctype in CONTROLLABLE_TYPES
-        friendly = meta.get("name") or cam_id
 
         server_ip = coordinator.socket.server_details.ip
         server_port = coordinator.socket.server_details.port
-        self._attr_name = f"Rust+ {friendly}"
+        # name=None -> the camera takes its device name; siblings (buttons, the
+        # Control switch) get device-relative names ("Aim Left", "Control", ...).
+        self._attr_name = None
         self._attr_unique_id = f"{server_ip}_{server_port}_cam_{cam_id}"
         self._attr_icon = _ICONS.get(ctype, "mdi:cctv")
         self._attr_device_info = camera_device_info(coordinator, cam_id, meta)
@@ -244,14 +272,17 @@ class RustPlusSubscribedCamera(Camera):
     ) -> bytes | None:
         """Return a freshly-accumulated JPEG from the camera session."""
         now = time.monotonic()
-        # Throttle every attempt — including failures — so a frequently-refreshing
-        # frontend (or an unreachable camera) doesn't spin the session.
-        if (now - self._last_fetch) < _MIN_REFRESH_SECONDS:
-            return self._last_image
         # A controllable camera (turret/ptz) must NOT be subscribed unless the user
         # has taken control via its Control switch — for a turret that would disable
         # its auto-aim. Show the last frame until then.
-        if self._controllable and not self._session.is_active(self._cam_id):
+        active = self._session.is_active(self._cam_id)
+        if self._controllable and not active:
+            return self._last_image
+        # Throttle every attempt — including failures — so a frequently-refreshing
+        # frontend (or an unreachable camera) doesn't spin the session. While under
+        # active control, refresh fast so the feed tracks each aim press.
+        min_refresh = _ACTIVE_REFRESH_SECONDS if active else _MIN_REFRESH_SECONDS
+        if (now - self._last_fetch) < min_refresh:
             return self._last_image
         self._last_fetch = now
 

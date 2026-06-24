@@ -10,24 +10,35 @@ Only one camera can be active per socket (``CameraManager.ACTIVE_INSTANCE``), so
 every camera on a server shares this one session, serialized by a lock. The
 subscription is kept open for a short idle window so rapid frame refreshes and
 control inputs reuse it instead of re-subscribing each time.
+
+Frames are rendered only on demand per snapshot request, and a held turret is kept
+live with a low-rate (~2/s) re-subscribe. Both are cheap and loop-safe; the things
+that previously hung HA's loop were a high-rate input pump and rendering on every
+incoming packet — neither is used here.
 """
 from __future__ import annotations
 
 import asyncio
 import io
 import logging
+import time
 
 from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
 # How long to let ray-sample packets accumulate before taking a frame (the image
-# de-noises as samples build up — one packet alone is heavily pixelated).
+# de-noises as samples build up — one packet alone is heavily pixelated). Used for
+# a passive/CCTV view, where we want a clean first frame.
 _ACCUMULATE_SECONDS = 2.0
-_FRAME_POLL_INTERVAL = 0.25
+_FRAME_POLL_INTERVAL = 0.2
 # Keep the camera subscribed this long after the last use so repeat views and
-# control inputs don't pay the re-subscribe cost each time.
+# control inputs reuse it instead of re-subscribing each time.
 _IDLE_EXIT_SECONDS = 20.0
+# While a held turret is being viewed, re-subscribe at most this often to keep its
+# stream live (aiming otherwise stalls it). Driven by the human-paced viewing poll,
+# so ~1-2 Hz — cheap and loop-safe.
+_LIVE_RESUBSCRIBE_INTERVAL = 0.5
 
 
 class CameraUnavailable(Exception):
@@ -48,6 +59,7 @@ class RustPlusCameraSession:
         self._held_cam: str | None = None
         self._lock = asyncio.Lock()
         self._idle_handle = None
+        self._last_resubscribe = 0.0
 
     # ---- connection / subscription lifecycle ------------------------------- #
     async def _ensure_socket(self) -> None:
@@ -100,7 +112,7 @@ class RustPlusCameraSession:
 
     # ---- public operations ------------------------------------------------- #
     async def snapshot(self, cam_id: str) -> bytes | None:
-        """Subscribe (or reuse), accumulate samples, return a JPEG frame."""
+        """Return a JPEG frame from the camera's accumulated ray buffer."""
         async with self._lock:
             # Don't steal the single camera slot from a turret that's under active
             # control just to snapshot a different camera.
@@ -108,6 +120,28 @@ class RustPlusCameraSession:
                 return None
             self._cancel_idle()
             cam = await self._ensure_subscribed(cam_id)
+
+            if self._held_cam == cam_id:
+                # Aiming stalls the turret's stream; re-subscribe at ~1-2 Hz (gated
+                # by this human-paced viewing poll) to kick it back to live, then
+                # render the latest buffered frame.
+                now = time.monotonic()
+                if now - self._last_resubscribe >= _LIVE_RESUBSCRIBE_INTERVAL:
+                    self._last_resubscribe = now
+                    try:
+                        await cam.resubscribe()
+                    except Exception as err:  # noqa: BLE001
+                        _LOGGER.debug("Live-control resubscribe failed: %s", err)
+                frame = await cam.get_frame(render_entities=True) if cam.has_frame_data() else None
+                self._schedule_idle()
+                if frame is None:
+                    return None
+                buf = io.BytesIO()
+                frame.convert("RGB").save(buf, format="JPEG")
+                return buf.getvalue()
+
+            # Passive/CCTV: let a couple seconds of samples build for a clean first
+            # frame.
             frame = None
             elapsed = 0.0
             while elapsed < _ACCUMULATE_SECONDS:
@@ -118,7 +152,6 @@ class RustPlusCameraSession:
             if cam.has_frame_data():
                 frame = await cam.get_frame(render_entities=True)
             self._schedule_idle()
-
             if frame is None:
                 return None
             buf = io.BytesIO()

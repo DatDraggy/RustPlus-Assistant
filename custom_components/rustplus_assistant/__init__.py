@@ -95,10 +95,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Register the per-server hub device so the map, cameras and paired devices
     # nest under it (their device_info points here via `via_device`).
+    from .camera import server_label
     dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, f"{server_ip}_{server_port}")},
-        name=entry.title,
+        name=server_label(coordinator),
         manufacturer="Facepunch",
         model="Rust Server",
     )
@@ -106,6 +107,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Reload when options change (e.g. a camera is added/removed, or a device is
     # auto-discovered on pairing) so the affected entities are (re)created.
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
+    # Team change events -> HA bus + immediate member refresh; team services.
+    from .team import async_register_services, async_setup_team_events
+    await async_setup_team_events(hass, entry, coordinator)
+    async_register_services(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

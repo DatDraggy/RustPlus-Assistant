@@ -5,10 +5,11 @@ import logging
 import time
 from datetime import timedelta
 
-from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.components.sensor import SensorEntity, SensorStateClass, SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.core import callback
 
@@ -17,6 +18,7 @@ from rustplus.utils import translate_id_to_stack
 from .camera import server_device_info
 from .const import DOMAIN
 from .entity import RustPlusEntity
+from .event_cadence import MAP_EVENTS, get_event_trackers
 from .coordinator import RustPlusDataCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,6 +49,19 @@ async def async_setup_entry(
     # In-game time of day
     entities_to_add.append(RustPlusTimeSensor(coordinator))
 
+    # Last team chat message (also fires team-chat / command bus events).
+    from .team import DEFAULT_COMMAND_PREFIX
+
+    command_prefix = entry.options.get("command_prefix", DEFAULT_COMMAND_PREFIX)
+    entities_to_add.append(RustPlusLastChatSensor(coordinator, command_prefix))
+
+    # "Next occurrence" estimate per recurring map event (Cargo Ship, ...).
+    trackers = get_event_trackers(hass, entry.entry_id)
+    for key, name, _marker_type, icon in MAP_EVENTS:
+        entities_to_add.append(
+            RustPlusEventEstimateSensor(coordinator, key, name, icon, trackers[key])
+        )
+
     # Add paired Storage Monitors
     paired_monitors = entry.options.get("storage_monitors", {})
     for eid, name in paired_monitors.items():
@@ -60,14 +75,21 @@ async def async_setup_entry(
 
     async_add_entities(entities_to_add)
 
+    # Per-teammate sensors, added now and as teammates appear.
+    from .team import add_team_member_sensors
+
+    add_team_member_sensors(hass, entry, coordinator, async_add_entities)
+
 class RustPlusServerSensor(CoordinatorEntity[RustPlusDataCoordinator], SensorEntity):
     """Representation of a Rust+ Server Sensor."""
+
+    _attr_has_entity_name = True
 
     def __init__(self, coordinator: RustPlusDataCoordinator, sensor_type: str, name: str) -> None:
         """Initialize."""
         super().__init__(coordinator)
         self.sensor_type = sensor_type
-        self._attr_name = f"Rust+ {name}"
+        self._attr_name = name
 
         server_ip = coordinator.socket.server_details.ip
         server_port = coordinator.socket.server_details.port
@@ -94,12 +116,13 @@ class RustPlusServerInfoSensor(CoordinatorEntity[RustPlusDataCoordinator], Senso
     """
 
     _attr_icon = "mdi:server"
+    _attr_has_entity_name = True
 
     def __init__(self, coordinator: RustPlusDataCoordinator) -> None:
         """Initialize."""
         super().__init__(coordinator)
         sd = coordinator.socket.server_details
-        self._attr_name = "Rust+ Server"
+        self._attr_name = "Server"
         self._attr_unique_id = f"{sd.ip}_{sd.port}_server_info"
         self._attr_device_info = server_device_info(coordinator)
 
@@ -132,10 +155,12 @@ class RustPlusServerInfoSensor(CoordinatorEntity[RustPlusDataCoordinator], Senso
 class RustPlusTeamSensor(CoordinatorEntity[RustPlusDataCoordinator], SensorEntity):
     """Representation of a Rust+ Team Sensor."""
 
+    _attr_has_entity_name = True
+
     def __init__(self, coordinator: RustPlusDataCoordinator) -> None:
         """Initialize."""
         super().__init__(coordinator)
-        self._attr_name = "Rust+ Team Size"
+        self._attr_name = "Team Size"
 
         server_ip = coordinator.socket.server_details.ip
         server_port = coordinator.socket.server_details.port
@@ -157,12 +182,13 @@ class RustPlusTimeSensor(CoordinatorEntity[RustPlusDataCoordinator], SensorEntit
     """The in-game time of day (e.g. ``13:45``)."""
 
     _attr_icon = "mdi:clock-time-four-outline"
+    _attr_has_entity_name = True
 
     def __init__(self, coordinator: RustPlusDataCoordinator) -> None:
         """Initialize."""
         super().__init__(coordinator)
         sd = coordinator.socket.server_details
-        self._attr_name = "Rust+ Time"
+        self._attr_name = "Time"
         self._attr_unique_id = f"{sd.ip}_{sd.port}_time"
         self._attr_device_info = server_device_info(coordinator)
 
@@ -318,8 +344,9 @@ class RustPlusTCMaterialSensor(RustPlusEntity, SensorEntity):
 
     def __init__(self, coordinator, entity_id: int, monitor_name: str, material_name: str) -> None:
         """Initialize."""
-        super().__init__(coordinator, entity_id, f"storage_monitor_{material_name.lower().replace(' ', '_')}", f"{monitor_name} {material_name}")
+        super().__init__(coordinator, entity_id, f"storage_monitor_{material_name.lower().replace(' ', '_')}", monitor_name, device_model="Storage Monitor")
         self._attr_unique_id = f"{self._attr_unique_id}_{material_name.lower().replace(' ', '_')}"
+        self._attr_name = material_name
         self.material_name = material_name
         self._attr_native_value = 0
         self._attr_native_unit_of_measurement = "items"
@@ -349,8 +376,9 @@ class RustPlusTCUpkeepSensor(RustPlusEntity, SensorEntity):
 
     def __init__(self, coordinator, entity_id: int, monitor_name: str) -> None:
         """Initialize."""
-        super().__init__(coordinator, entity_id, "storage_monitor_upkeep", f"{monitor_name} Upkeep")
+        super().__init__(coordinator, entity_id, "storage_monitor_upkeep", monitor_name, device_model="Storage Monitor")
         self._attr_unique_id = f"{self._attr_unique_id}_upkeep"
+        self._attr_name = "Upkeep"
         self._attr_native_value = "Unknown"
 
     @property
@@ -362,8 +390,164 @@ class RustPlusTCUpkeepSensor(RustPlusEntity, SensorEntity):
 
 
         duration_seconds = max(0, info.protection_expiry - int(time.time()))
-        
+
         self._attr_native_value = str(timedelta(seconds=duration_seconds))
         return self._attr_native_value
+
+
+class RustPlusEventEstimateSensor(CoordinatorEntity[RustPlusDataCoordinator], RestoreEntity, SensorEntity):
+    """Estimated next spawn time for a recurring map event.
+
+    A ``timestamp`` sensor so the frontend renders a live countdown. The estimate
+    is last spawn + average cadence (see :class:`EventCadenceTracker`); the spawn
+    ring is shared with the event's binary_sensor and persisted here across
+    restarts. Blank until at least two spawns have been observed.
+    """
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, coordinator, key: str, name: str, icon: str, tracker) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        sd = coordinator.socket.server_details
+        self._tracker = tracker
+        self._attr_name = f"{name} Next"
+        self._attr_unique_id = f"{sd.ip}_{sd.port}_event_{key}_next"
+        self._attr_icon = icon
+        self._attr_device_info = server_device_info(coordinator)
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the persisted spawn ring so cadence survives a restart."""
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is not None:
+            self._tracker.restore(last.attributes.get("spawn_history"))
+
+    @property
+    def native_value(self):
+        """Projected next spawn (None until cadence is known)."""
+        return self._tracker.next_estimate
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Record spawn rising edges before writing state."""
+        self._tracker.observe((self.coordinator.data or {}).get("markers"))
+        super()._handle_coordinator_update()
+
+    @property
+    def extra_state_attributes(self):
+        """Persist the spawn ring + expose the cadence used for the estimate."""
+        cadence = self._tracker.cadence
+        last = self._tracker.last_spawn
+        return {
+            "spawn_history": self._tracker.serialize(),
+            "cadence_minutes": round(cadence.total_seconds() / 60, 1) if cadence else None,
+            "samples": self._tracker.sample_count,
+            "last_spawn": last.isoformat() if last else None,
+        }
+
+
+def parse_command(text: str, prefix: str):
+    """Split a chat message into (command, args) if it starts with ``prefix``.
+
+    Returns ``(None, None)`` for a normal (non-command) message.
+    """
+    if not text or not prefix or not text.startswith(prefix):
+        return None, None
+    body = text[len(prefix):].strip()
+    parts = body.split()
+    return (parts[0].lower() if parts else ""), parts[1:]
+
+
+class RustPlusLastChatSensor(CoordinatorEntity[RustPlusDataCoordinator], SensorEntity):
+    """The most recent team-chat message.
+
+    State is the message text; the sender and metadata are attributes. Each message
+    also fires ``rustplus_team_chat`` on the HA bus, and messages starting with the
+    command prefix (default ``!``) additionally fire ``rustplus_command`` with the
+    parsed command + args, so users can drive automations from in-game chat.
+    """
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:chat"
+
+    def __init__(self, coordinator, command_prefix: str) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        sd = coordinator.socket.server_details
+        self._command_prefix = command_prefix or "!"
+        self._attr_name = "Last Team Message"
+        self._attr_unique_id = f"{sd.ip}_{sd.port}_last_chat"
+        self._attr_device_info = server_device_info(coordinator)
+        self._attr_native_value = None
+        self._attr_extra_state_attributes = {}
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to team-chat websocket events."""
+        await super().async_added_to_hass()
+        from rustplus.identification import RegisteredListener
+        from rustplus.events import ChatEventPayload
+
+        async def handle_chat(event):
+            self.hass.async_create_task(self._async_handle_chat(event.message))
+
+        self._listener = RegisteredListener("ha_team_chat", handle_chat)
+        ChatEventPayload.HANDLER_LIST.register(
+            self._listener, self.coordinator.socket.server_details
+        )
+        self.async_on_remove(self._async_remove_listener)
+
+    async def _async_handle_chat(self, msg) -> None:
+        """Update state and fire chat / command bus events."""
+        from .team import CHAT_EVENT, COMMAND_EVENT
+
+        text = getattr(msg, "message", "") or ""
+        sender = getattr(msg, "name", None)
+        steam_id = getattr(msg, "steam_id", None)
+        colour = getattr(msg, "colour", None)
+        ts = getattr(msg, "time", None)
+        command, args = parse_command(text, self._command_prefix)
+
+        self._attr_native_value = text[:255]
+        self._attr_extra_state_attributes = {
+            "sender_name": sender,
+            "sender_steam_id": steam_id,
+            "colour": colour,
+            "time": ts,
+            "is_command": command is not None,
+            "command": command,
+            "args": args,
+        }
+        self.async_write_ha_state()
+
+        sd = self.coordinator.socket.server_details
+        payload = {
+            "server": f"{sd.ip}:{sd.port}",
+            "sender_name": sender,
+            "sender_steam_id": steam_id,
+            "message": text,
+            "colour": colour,
+            "time": ts,
+        }
+        self.hass.bus.async_fire(CHAT_EVENT, payload)
+        if command is not None:
+            self.hass.bus.async_fire(COMMAND_EVENT, {**payload, "command": command, "args": args})
+
+    @callback
+    def _async_remove_listener(self):
+        """Unregister the chat listener."""
+        from rustplus.events import ChatEventPayload
+        ChatEventPayload.HANDLER_LIST.unregister(
+            self._listener, self.coordinator.socket.server_details
+        )
+
+    @property
+    def native_value(self):
+        return self._attr_native_value
+
+    @property
+    def extra_state_attributes(self):
+        return self._attr_extra_state_attributes
 
 
