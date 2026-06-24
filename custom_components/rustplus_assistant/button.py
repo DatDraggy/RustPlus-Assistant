@@ -27,18 +27,35 @@ from .coordinator import RustPlusDataCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-# Mouse-delta magnitude applied per aim-button press; the camera rotates by this
-# much each tap. Tunable — calibrate to taste (and flip up/down if inverted).
-_AIM_STEP = 2.0
+# --- Aim calibration -------------------------------------------------------- #
+# One aim-button press turns the camera by this many degrees, so a full
+# revolution is 360 / 11.25 = 32 clicks — the on-hardware acceptance test.
+_AIM_DEGREES_PER_CLICK = 11.25
+
+# rustplus sends the joystick vector straight through as a raw server-side
+# mouse_delta — there is NO degrees conversion in the library; the server applies
+# the rotation. So degrees only become real once this factor is calibrated: raw
+# mouse-delta units per degree of rotation. CALIBRATE ON HARDWARE — take Control
+# of a turret, tap "Aim Right" 32 times and tune this until that is exactly one
+# 360° turn (raise it if a click turns too little, lower it if too much).
+_MOUSE_DELTA_PER_DEGREE = 0.30
+
+# Mouse-delta magnitude applied per aim press (degrees -> raw delta).
+_AIM_STEP = _AIM_DEGREES_PER_CLICK * _MOUSE_DELTA_PER_DEGREE
+
+# Pitch (up/down) sign. If "Aim Up"/"Aim Down" come out inverted on your
+# hardware, set this to -1 (yaw / left-right is unaffected).
+_PITCH_SIGN = 1
 
 
 def _controls(can_fire: bool = True) -> list[tuple]:
     """(key, label, icon, buttons, joystick, release_after) for each control."""
+    pitch = _AIM_STEP * _PITCH_SIGN
     specs = [
         ("aim_left",  "Aim Left",  "mdi:arrow-left-bold-outline",  None, Vector(x=-_AIM_STEP, y=0), False),
         ("aim_right", "Aim Right", "mdi:arrow-right-bold-outline", None, Vector(x=_AIM_STEP, y=0),  False),
-        ("aim_up",    "Aim Up",    "mdi:arrow-up-bold-outline",    None, Vector(x=0, y=_AIM_STEP),  False),
-        ("aim_down",  "Aim Down",  "mdi:arrow-down-bold-outline",  None, Vector(x=0, y=-_AIM_STEP), False),
+        ("aim_up",    "Aim Up",    "mdi:arrow-up-bold-outline",    None, Vector(x=0, y=pitch),  False),
+        ("aim_down",  "Aim Down",  "mdi:arrow-down-bold-outline",  None, Vector(x=0, y=-pitch), False),
     ]
     if can_fire:
         specs.append(("fire", "Fire", "mdi:pistol", [MovementControls.FIRE_PRIMARY], None, True))
@@ -73,6 +90,8 @@ async def async_setup_entry(
 class RustPlusTurretButton(ButtonEntity):
     """A single aim/fire control for a Rust+ controllable camera."""
 
+    _attr_has_entity_name = True
+
     def __init__(self, coordinator: RustPlusDataCoordinator, session, cam_id, cam_name, spec, device_info=None) -> None:
         """Initialize."""
         key, label, icon, buttons, joystick, release_after = spec
@@ -84,7 +103,7 @@ class RustPlusTurretButton(ButtonEntity):
 
         server_ip = coordinator.socket.server_details.ip
         server_port = coordinator.socket.server_details.port
-        self._attr_name = f"Rust+ {cam_name} {label}"
+        self._attr_name = label  # device-relative ("Aim Left", "Fire", ...)
         self._attr_unique_id = f"{server_ip}_{server_port}_cam_{cam_id}_{key}"
         self._attr_icon = icon
         self._attr_device_info = device_info

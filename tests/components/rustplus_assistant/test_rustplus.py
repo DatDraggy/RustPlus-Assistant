@@ -92,7 +92,8 @@ class TestRustPlusEntity:
         assert entity._attr_unique_id == "192.168.1.100_28015_12345"
         assert entity.rust_entity_id == 12345
         assert entity.entity_type == "switch"
-        assert entity._attr_name == "My Switch"
+        assert entity._attr_name is None  # primary entity inherits the device name
+        assert "My Switch" in entity._attr_device_info["name"]
 
     def test_device_info_structure(self):
         """Device info should have the correct identifiers and via_device."""
@@ -103,9 +104,9 @@ class TestRustPlusEntity:
 
         di = entity._attr_device_info
         assert ("rustplus_assistant", "192.168.1.100_28015_99999") in di["identifiers"]
-        assert di["name"] == "Raid Alarm"
+        assert "Raid Alarm" in di["name"]  # server-scoped: "{server_label} Raid Alarm"
         assert di["manufacturer"] == "Facepunch"
-        assert di["model"] == "Smart_alarm"
+        assert di["model"] == "Smart Alarm"
         assert di["via_device"] == ("rustplus_assistant", "192.168.1.100_28015")
 
     def test_different_servers_produce_different_ids(self):
@@ -338,7 +339,7 @@ class TestServerSensor:
         sensor = RustPlusServerSensor(coord, "players", "Players Online")
 
         assert sensor._attr_unique_id == "192.168.1.100_28015_players"
-        assert sensor._attr_name == "Rust+ Players Online"
+        assert sensor._attr_name == "Players Online"
 
     def test_returns_none_without_data(self):
         """Returns None when coordinator has no data."""
@@ -449,7 +450,8 @@ class TestSmartAlarmEvent:
 
         assert ev._attr_event_types == [EVENT_TRIGGERED]
         assert ev._attr_unique_id.endswith("_event")
-        assert ev._attr_name == "Smart Alarm (8408) Event"
+        assert ev._attr_name == "Event"
+        assert "Smart Alarm (8408)" in ev._attr_device_info["name"]
 
     @pytest.mark.asyncio
     async def test_fires_only_on_rising_edge(self):
@@ -718,15 +720,18 @@ class TestPlatformSetup:
 
         await async_setup_entry(hass, entry, async_add)
 
-        # 3 server + 1 server-info + 1 team + 1 in-game time
-        assert len(added) == 6
+        # 3 server + 1 server-info + 1 team + 1 in-game time + 4 event estimates
+        # + 1 last-chat
+        assert len(added) == 11
         names = [e._attr_name for e in added]
-        assert "Rust+ Players Online" in names
-        assert "Rust+ Time" in names
-        assert "Rust+ Server" in names
-        assert "Rust+ Players Queued" in names
-        assert "Rust+ Max Players" in names
-        assert "Rust+ Team Size" in names
+        assert "Players Online" in names
+        assert "Time" in names
+        assert "Server" in names
+        assert "Players Queued" in names
+        assert "Max Players" in names
+        assert "Team Size" in names
+        assert "Cargo Ship Next" in names
+        assert "Last Team Message" in names
 
     @pytest.mark.asyncio
     async def test_sensor_setup_creates_storage_monitor_sub_sensors(self):
@@ -746,8 +751,9 @@ class TestPlatformSetup:
 
         await async_setup_entry(hass, entry, async_add)
 
-        # 6 base (3 server + server-info + team + time) + 1 monitor + 4 materials + 1 upkeep = 12
-        assert len(added) == 12
+        # 11 base (3 server + server-info + team + time + 4 event estimates + last-chat)
+        # + 1 monitor + 4 materials + 1 upkeep = 17
+        assert len(added) == 17
 
     @pytest.mark.asyncio
     async def test_binary_sensor_setup_creates_alarms(self):
@@ -1033,13 +1039,14 @@ class TestCamera:
         assert cctv.unique_id != turret.unique_id
         assert cctv.icon == "mdi:cctv"
         assert turret.icon == "mdi:crosshairs-gps"
-        assert cctv.name == "Rust+ Front Door"
+        assert cctv._attr_name is None  # camera inherits its device name
 
     def test_subscribed_camera_defaults_name_to_id(self):
         from custom_components.rustplus_assistant.camera import RustPlusSubscribedCamera
 
         cam = RustPlusSubscribedCamera(self._coordinator(), None, "OILRIG1", {})
-        assert cam.name == "Rust+ OILRIG1"
+        assert cam._attr_name is None
+        assert "OILRIG1" in cam._attr_device_info["name"]
         assert cam.icon == "mdi:cctv"
 
     def test_classify_turret_from_control_flags(self):
@@ -1064,6 +1071,15 @@ class TestCamera:
 class TestTurretButtons:
     """Tests for button.py — turret aim/fire control specs and entities."""
 
+    def test_aim_step_is_11_25_degrees(self):
+        from custom_components.rustplus_assistant import button
+
+        # The user-facing contract: one click = 11.25°, so 32 clicks = one full turn.
+        assert button._AIM_DEGREES_PER_CLICK == 11.25
+        assert 360 / button._AIM_DEGREES_PER_CLICK == 32
+        # _AIM_STEP is the calibrated raw mouse-delta for that rotation.
+        assert button._AIM_STEP == button._AIM_DEGREES_PER_CLICK * button._MOUSE_DELTA_PER_DEGREE
+
     def test_control_specs(self):
         from custom_components.rustplus_assistant.button import _controls
         from rustplus import MovementControls
@@ -1076,7 +1092,8 @@ class TestTurretButtons:
         # aim buttons carry a joystick nudge and no held buttons; fire is the inverse
         assert by_key["aim_left"][4].x < 0 and by_key["aim_left"][4].y == 0
         assert by_key["aim_right"][4].x > 0
-        assert by_key["aim_up"][4].y > 0 and by_key["aim_down"][4].y < 0
+        # up/down are opposite, nonzero pitch (sign itself is hardware-calibrated)
+        assert by_key["aim_up"][4].y == -by_key["aim_down"][4].y != 0
         assert by_key["aim_left"][3] is None
         fire = by_key["fire"]
         assert fire[3] == [MovementControls.FIRE_PRIMARY]
@@ -1099,7 +1116,7 @@ class TestTurretButtons:
         spec = next(s for s in _controls() if s[0] == "aim_left")
         btn = RustPlusTurretButton(_Coord(), None, "dragoncam", "Dragon", spec)
         assert btn.unique_id == "1.2.3.4_28015_cam_dragoncam_aim_left"
-        assert btn.name == "Rust+ Dragon Aim Left"
+        assert btn._attr_name == "Aim Left"
 
 
 class TestCameraSessionControl:
@@ -1109,7 +1126,7 @@ class TestCameraSessionControl:
     async def test_activate_deactivate_toggles_control(self):
         from custom_components.rustplus_assistant.camera_session import RustPlusCameraSession
 
-        sess = RustPlusCameraSession(None, None)
+        sess = RustPlusCameraSession(_make_hass(), None)
         subscribed: list[str] = []
 
         async def _fake_ensure(cam_id, _retry=True):
@@ -1169,7 +1186,7 @@ class TestCameraSessionControl:
 
         sw = RustPlusTurretControlSwitch(_Coord(), None, "dragoncam", "Dragon")
         assert sw.unique_id == "1.2.3.4_28015_cam_dragoncam_control"
-        assert sw.name == "Rust+ Dragon Control"
+        assert sw._attr_name == "Control"
 
 
 class TestCameraTypes:
@@ -1222,6 +1239,39 @@ class TestCameraTypes:
         assert (DOMAIN, "1.2.3.4_28015_cam_dragoncam") in di["identifiers"]
         assert di["model"] == "Auto Turret"
         assert di["via_device"] == (DOMAIN, "1.2.3.4_28015")
+
+
+class TestServerLabel:
+    """server_label derives a clean, server-unique device/entity_id prefix."""
+
+    @staticmethod
+    def _coord(title):
+        class _SD:
+            ip = "1.2.3.4"
+            port = 28015
+
+        class _Sock:
+            server_details = _SD()
+
+        class _Entry:
+            pass
+
+        e = _Entry()
+        e.title = title
+
+        class _C:
+            socket = _Sock()
+            config_entry = e
+
+        return _C()
+
+    def test_label_derivation(self):
+        from custom_components.rustplus_assistant.camera import server_label
+
+        assert server_label(self._coord("[EU] TideRust |Solo/Duo/Trio/Quad|Monthly")) == "TideRust"
+        assert server_label(self._coord("Rusty Moose |US Monthly")) == "Rusty Moose"
+        assert server_label(self._coord("Plain Name")) == "Plain Name"
+        assert server_label(self._coord("")) == "1.2.3.4"  # no usable title -> ip fallback
 
 
 class TestTimeSensors:
@@ -1337,6 +1387,7 @@ class TestMapEvents:
 
     def test_event_sensor_presence(self):
         from custom_components.rustplus_assistant.binary_sensor import RustPlusEventBinarySensor
+        from custom_components.rustplus_assistant.event_cadence import EventCadenceTracker
         from rustplus import RustMarker
 
         class _M:
@@ -1345,10 +1396,12 @@ class TestMapEvents:
 
         coord = self._coord([_M(RustMarker.CargoShipMarker), _M(RustMarker.VendingMachineMarker)])
         cargo = RustPlusEventBinarySensor(
-            coord, "cargo_ship", "Cargo Ship", RustMarker.CargoShipMarker, "mdi:ferry"
+            coord, "cargo_ship", "Cargo Ship", RustMarker.CargoShipMarker, "mdi:ferry",
+            EventCadenceTracker(RustMarker.CargoShipMarker),
         )
         heli = RustPlusEventBinarySensor(
-            coord, "patrol_helicopter", "Patrol Helicopter", RustMarker.PatrolHelicopterMarker, "mdi:helicopter"
+            coord, "patrol_helicopter", "Patrol Helicopter", RustMarker.PatrolHelicopterMarker, "mdi:helicopter",
+            EventCadenceTracker(RustMarker.PatrolHelicopterMarker),
         )
         assert cargo.is_on is True
         assert heli.is_on is False
@@ -1356,7 +1409,8 @@ class TestMapEvents:
 
         # no marker data yet -> unknown, not "off"
         assert RustPlusEventBinarySensor(
-            self._coord(), "cargo_ship", "Cargo Ship", RustMarker.CargoShipMarker, "mdi:ferry"
+            self._coord(), "cargo_ship", "Cargo Ship", RustMarker.CargoShipMarker, "mdi:ferry",
+            EventCadenceTracker(RustMarker.CargoShipMarker),
         ).is_on is None
 
     def test_annotated_map_camera(self):
@@ -1364,4 +1418,201 @@ class TestMapEvents:
 
         cam = RustPlusAnnotatedMapCamera(self._coord())
         assert cam.unique_id == "1.2.3.4_28015_map_annotated"
-        assert cam.name == "Rust+ Map (Events)"
+        assert cam._attr_name == "Map (Events)"
+
+
+class TestEventCadence:
+    """Tests for EventCadenceTracker — rising-edge spawn detection + cadence."""
+
+    @staticmethod
+    def _markers(*types):
+        class _M:
+            def __init__(self, t):
+                self.type = t
+
+        return [_M(t) for t in types]
+
+    def test_cadence_and_next_estimate(self):
+        import unittest.mock as mock
+        from datetime import timedelta
+        from homeassistant.util import dt as dt_util
+        from rustplus import RustMarker
+        from custom_components.rustplus_assistant.event_cadence import EventCadenceTracker
+
+        tr = EventCadenceTracker(RustMarker.CargoShipMarker)
+        cargo = self._markers(RustMarker.CargoShipMarker)
+        empty = self._markers()
+        base = dt_util.utcnow()
+
+        def at(minutes):
+            return base + timedelta(minutes=minutes)
+
+        tr.observe(empty)  # baseline: off
+        assert tr.sample_count == 0
+        with mock.patch("homeassistant.util.dt.utcnow", return_value=at(0)):
+            tr.observe(cargo)  # spawn #1
+        tr.observe(cargo)  # still on -> not double counted
+        tr.observe(empty)  # off
+        assert tr.sample_count == 1
+        assert tr.cadence is None  # needs >= 2 spawns
+        assert tr.next_estimate is None
+
+        with mock.patch("homeassistant.util.dt.utcnow", return_value=at(60)):
+            tr.observe(cargo)  # spawn #2
+        tr.observe(empty)
+        assert tr.sample_count == 2
+        assert tr.cadence == timedelta(minutes=60)
+        assert tr.next_estimate == at(120)
+
+        with mock.patch("homeassistant.util.dt.utcnow", return_value=at(100)):
+            tr.observe(cargo)  # spawn #3 -> gaps [60, 40] -> cadence 50
+        assert tr.cadence == timedelta(minutes=50)
+        assert tr.next_estimate == at(150)
+
+    def test_ignores_event_present_at_startup(self):
+        from rustplus import RustMarker
+        from custom_components.rustplus_assistant.event_cadence import EventCadenceTracker
+
+        tr = EventCadenceTracker(RustMarker.CargoShipMarker)
+        cargo = self._markers(RustMarker.CargoShipMarker)
+        tr.observe(cargo)  # already up at startup -> baseline only
+        tr.observe(cargo)
+        assert tr.sample_count == 0
+
+    def test_restore_roundtrip(self):
+        from datetime import timedelta
+        from homeassistant.util import dt as dt_util
+        from rustplus import RustMarker
+        from custom_components.rustplus_assistant.event_cadence import EventCadenceTracker
+
+        tr = EventCadenceTracker(RustMarker.CargoShipMarker)
+        base = dt_util.utcnow()
+        data = [base.isoformat(), (base + timedelta(minutes=60)).isoformat()]
+        tr.restore(data)
+        assert tr.sample_count == 2
+        assert tr.cadence == timedelta(minutes=60)
+        # restore is a no-op once the ring is populated
+        tr.restore([base.isoformat()])
+        assert tr.sample_count == 2
+
+
+class TestTeam:
+    """Tests for team.py — member status, grid, and the per-teammate sensor."""
+
+    @staticmethod
+    def _member(steam_id, name, online=True, alive=True, x=1500, y=2500):
+        return SimpleNamespace(
+            steam_id=steam_id, name=name, x=x, y=y,
+            is_online=online, is_alive=alive, spawn_time=0, death_time=0,
+        )
+
+    def _coord(self, members, map_size=4000):
+        class _SD:
+            ip = "1.2.3.4"
+            port = 28015
+
+        class _Sock:
+            server_details = _SD()
+
+        team = SimpleNamespace(
+            members=members,
+            leader_steam_id=(members[0].steam_id if members else None),
+        )
+
+        class _C:
+            socket = _Sock()
+            data = {"team_info": team, "info": SimpleNamespace(size=map_size)}
+
+        return _C()
+
+    def test_member_status(self):
+        from custom_components.rustplus_assistant.team import member_status
+
+        assert member_status(self._member(1, "a", online=True, alive=True)) == "alive"
+        assert member_status(self._member(1, "a", online=True, alive=False)) == "dead"
+        assert member_status(self._member(1, "a", online=False, alive=True)) == "offline"
+
+    def test_member_grid(self):
+        from custom_components.rustplus_assistant.team import member_grid
+
+        g = member_grid(1500, 2500, 4000)
+        assert isinstance(g, str) and g[0].isalpha() and g[1:].isdigit()
+        assert member_grid(None, None, 4000) is None
+        assert member_grid(1500, 2500, None) is None
+
+    def test_member_sensor(self):
+        from custom_components.rustplus_assistant.team import RustPlusTeamMemberSensor
+
+        bob = self._member(123, "Bob", online=True, alive=False)
+        coord = self._coord([bob])
+        s = RustPlusTeamMemberSensor(coord, 123, "Bob")
+
+        assert s.unique_id == "1.2.3.4_28015_team_123"
+        assert s._attr_name == "Bob"
+        assert s.native_value == "dead"
+        attrs = s.extra_state_attributes
+        assert attrs["steam_id"] == 123 and attrs["in_team"] is True
+        assert attrs["is_alive"] is False and attrs["grid"]
+
+        # a teammate who has left the team -> unknown / in_team False
+        coord.data["team_info"].members = []
+        assert s.native_value is None
+        assert s.extra_state_attributes["in_team"] is False
+
+
+class TestTeamChat:
+    """Tests for the last-chat sensor + command parsing."""
+
+    @staticmethod
+    def _coord():
+        class _SD:
+            ip = "1.2.3.4"
+            port = 28015
+
+        class _Sock:
+            server_details = _SD()
+
+        class _C:
+            socket = _Sock()
+            data = {}
+
+        return _C()
+
+    def test_parse_command(self):
+        from custom_components.rustplus_assistant.sensor import parse_command
+
+        assert parse_command("!cargo where", "!") == ("cargo", ["where"])
+        assert parse_command("!Cargo", "!") == ("cargo", [])
+        assert parse_command("hello team", "!") == (None, None)
+        assert parse_command("", "!") == (None, None)
+        assert parse_command("#foo bar baz", "#") == ("foo", ["bar", "baz"])
+
+    @pytest.mark.asyncio
+    async def test_chat_sensor_fires_events(self):
+        from custom_components.rustplus_assistant.sensor import RustPlusLastChatSensor
+
+        s = RustPlusLastChatSensor(self._coord(), "!")
+        fired = []
+        s.hass = MagicMock()
+        s.hass.bus.async_fire = MagicMock(side_effect=lambda ev, data: fired.append((ev, data)))
+        s.async_write_ha_state = MagicMock()
+
+        # a command message fires both team-chat and command events
+        await s._async_handle_chat(
+            SimpleNamespace(message="!cargo now", name="Bob", steam_id=42, colour="#fff", time=123)
+        )
+        assert s.native_value == "!cargo now"
+        attrs = s.extra_state_attributes
+        assert attrs["is_command"] is True and attrs["command"] == "cargo" and attrs["args"] == ["now"]
+        assert attrs["sender_name"] == "Bob" and attrs["sender_steam_id"] == 42
+        evs = {e for e, _ in fired}
+        assert "rustplus_team_chat" in evs and "rustplus_command" in evs
+
+        # a normal message fires only the chat event
+        fired.clear()
+        await s._async_handle_chat(
+            SimpleNamespace(message="hi team", name="Bob", steam_id=42, colour="#fff", time=124)
+        )
+        assert s.extra_state_attributes["is_command"] is False
+        evs2 = {e for e, _ in fired}
+        assert "rustplus_team_chat" in evs2 and "rustplus_command" not in evs2

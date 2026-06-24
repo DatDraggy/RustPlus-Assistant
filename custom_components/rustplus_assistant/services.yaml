@@ -1,0 +1,25 @@
+promote_leader:
+  name: Promote team leader
+  description: >-
+    Promote a team member to team leader on the connected Rust+ server(s). You must
+    currently be the team leader for this to take effect.
+  fields:
+    steam_id:
+      name: Steam ID
+      description: Steam ID of the member to promote. Omit to use the server default.
+      example: "76561198000000000"
+      required: false
+      selector:
+        text:
+
+send_team_message:
+  name: Send team message
+  description: Post a message to the in-game Rust+ team chat.
+  fields:
+    message:
+      name: Message
+      description: The message text to send to team chat.
+      example: "Cargo just spawned!"
+      required: true
+      selector:
+        text:

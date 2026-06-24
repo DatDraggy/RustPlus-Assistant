@@ -56,7 +56,7 @@ class RustPlusSmartAlarmEvent(RustPlusEntity, EventEntity):
         # same alarm device (RustPlusEntity.__init__ built device_info from the
         # un-suffixed unique_id, so both entities attach to the same device).
         self._attr_unique_id = f"{self._attr_unique_id}_event"
-        self._attr_name = f"{name} Event"
+        self._attr_name = "Event"  # device-relative; the device carries the alarm name
         self._last_value = False
 
     async def async_added_to_hass(self) -> None:

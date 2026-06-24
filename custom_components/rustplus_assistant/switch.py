@@ -61,6 +61,7 @@ class RustPlusTurretControlSwitch(SwitchEntity):
     """
 
     _attr_icon = "mdi:remote"
+    _attr_has_entity_name = True
 
     def __init__(self, coordinator, session, cam_id: str, cam_name: str, device_info=None) -> None:
         """Initialize."""
@@ -68,7 +69,7 @@ class RustPlusTurretControlSwitch(SwitchEntity):
         self._cam_id = cam_id
         server_ip = coordinator.socket.server_details.ip
         server_port = coordinator.socket.server_details.port
-        self._attr_name = f"Rust+ {cam_name} Control"
+        self._attr_name = "Control"
         self._attr_unique_id = f"{server_ip}_{server_port}_cam_{cam_id}_control"
         self._attr_device_info = device_info
 
