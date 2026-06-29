@@ -36,13 +36,27 @@ class RustPlusDataCoordinator(DataUpdateCoordinator):
         self.subscribed_entities: set[int] = set()
         self._subscription_refs: dict[int, int] = {}
 
+    async def _connect(self) -> None:
+        """Connect the data socket, keeping the blocking proxy/SSL work off the loop.
+
+        rustplus' ``connect()`` fetches a proxy value with a blocking ``requests.get``
+        (which also loads SSL certs) — running that on the event loop freezes ALL of
+        Home Assistant for the duration of every reconnect (HA flags it as a blocking
+        call). Pre-fetch the value in an executor first so ``connect()`` hits the cache
+        and never blocks the loop. Mirrors what __init__.py does for the first connect.
+        """
+        from rustplus.remote.proxy.proxy_value_grabber import ProxyValueGrabber
+
+        await self.hass.async_add_executor_job(ProxyValueGrabber.get_value)
+        await self.socket.connect()
+
     async def _async_update_data(self):
         """Fetch data from Rust+."""
         try:
             reconnected = False
             async with self.api_lock:
                 if not hasattr(self.socket.ws, "open") or not self.socket.ws.open:
-                    await self.socket.connect()
+                    await self._connect()
                     reconnected = True
                 info = await self.socket.get_info()
                 if type(info).__name__ == "RustError":
@@ -57,7 +71,7 @@ class RustPlusDataCoordinator(DataUpdateCoordinator):
                         await self.socket.disconnect()
                     except Exception:  # noqa: BLE001
                         pass
-                    await self.socket.connect()
+                    await self._connect()
                     reconnected = True
                     info = await self.socket.get_info()
                 time = await self.socket.get_time()
@@ -131,7 +145,7 @@ class RustPlusDataCoordinator(DataUpdateCoordinator):
         try:
             async with self.api_lock:
                 if not hasattr(self.socket.ws, "open") or not self.socket.ws.open:
-                    await self.socket.connect()
+                    await self._connect()
                 await self.socket.set_subscription_to_entity(eid, value)
         except Exception as e:
             _LOGGER.debug("set_subscription_to_entity(%s, %s) failed: %s", eid, value, e)

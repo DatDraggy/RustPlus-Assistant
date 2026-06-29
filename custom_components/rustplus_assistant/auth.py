@@ -269,16 +269,25 @@ class RustPlusQRAuth:
         other on Facepunch — registrations are keyed by DeviceId). Falls back to a random
         uuid if the caller doesn't supply one.
         """
-        fcm_credentials = self._android_fcm_register()
-        fcm_token = fcm_credentials["fcm"]["token"]
         device_id = device_id or str(uuid.uuid4())
+        # Expo validates deviceId as a canonical (dashed) UUID, but HA's instance_id
+        # is a UUID hex string *without* dashes — normalise it (deterministic, so the
+        # per-install id stays stable). Anything non-UUID falls back to a stable uuid5.
+        try:
+            device_id = str(uuid.UUID(str(device_id)))
+        except (ValueError, TypeError, AttributeError):
+            device_id = str(uuid.uuid5(uuid.NAMESPACE_OID, str(device_id)))
         s = self.session
 
+        fcm_credentials = self._android_fcm_register()
+        fcm_token = fcm_credentials["fcm"]["token"]
         er = s.post(EXPO_URL, json={
             "type": "fcm", "deviceId": device_id, "development": False,
             "appId": ANDROID_PACKAGE, "deviceToken": fcm_token, "projectId": EXPO_PROJECT_ID,
         }, timeout=30)
-        er.raise_for_status()
+        if er.status_code != 200:
+            # Surface Expo's actual message (e.g. a validation error) rather than a bare HTTP code.
+            raise RustPlusAuthError(f"Expo getExpoPushToken returned {er.status_code}: {er.text[:300]}")
         expo_token = er.json()["data"]["expoPushToken"]
 
         fr = s.post(FP_PUSH_REGISTER, json={
