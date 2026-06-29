@@ -16,6 +16,7 @@ A Home Assistant custom integration to connect with the **Rust+ Companion App** 
 - 👥 **Server Stats**: Monitor online player count, queue size, and max player capacity.
 - 🗺️ **Map Camera**: View the in-game map as a camera entity in Home Assistant.
 
+### For a visual showcase, you can check out my video: https://www.youtube.com/watch?v=ed0F8BjBLkY
 ---
 
 ## Companion Dashboard Card
