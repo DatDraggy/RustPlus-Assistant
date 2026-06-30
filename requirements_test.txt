@@ -11,5 +11,5 @@
 # module load time. Keep these pinned to custom_components/.../manifest.json.
 pytest-homeassistant-custom-component
 pytest-asyncio
-rustplus==6.0.9
+rustplus==6.0.10
 betterproto==2.0.0b7

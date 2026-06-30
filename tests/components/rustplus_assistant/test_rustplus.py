@@ -964,7 +964,13 @@ class TestAuth:
             "gcm": {"androidId": "aid", "securityToken": "stok"},
         }
 
-        creds = auth.complete("hdr.payload.sig", device_id="HA-INSTALL-42")
+        # HA's instance_id is a 32-char hex string with no dashes. Expo requires a
+        # canonical UUID for deviceId, so complete() normalises it (deterministically,
+        # so the per-install id stays stable) and threads it into BOTH registrations.
+        import uuid
+
+        inst = "0123456789abcdef0123456789abcdef"
+        creds = auth.complete("hdr.payload.sig", device_id=inst)
 
         assert creds["rustplus_auth_token"] == "RUST_TOKEN"
         assert creds["expo_push_token"] == "ExponentPushToken[xyz]"
@@ -974,8 +980,11 @@ class TestAuth:
         }
         expo_post = next(body for url, body in posts if "getExpoPushToken" in url)
         fp_post = next(body for url, body in posts if "/api/push/register" in url)
-        assert expo_post["deviceId"] == "HA-INSTALL-42"
-        assert fp_post["DeviceId"] == "HA-INSTALL-42"
+        expected_id = str(uuid.UUID(inst))  # canonical dashed UUID Expo accepts
+        assert expected_id != inst  # it really did normalise
+        assert expo_post["deviceId"] == expected_id
+        assert fp_post["DeviceId"] == expected_id  # same id threaded to Facepunch
+        uuid.UUID(expo_post["deviceId"])  # must be a valid UUID (the Expo-400 fix)
         assert fp_post["AuthToken"] == "RUST_TOKEN"
         assert fp_post["PushToken"] == "ExponentPushToken[xyz]"
 
