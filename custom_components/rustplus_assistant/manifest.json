@@ -9,6 +9,6 @@
   "integration_type": "hub",
   "iot_class": "cloud_polling",
   "loggers": ["rustplus"],
-  "requirements": ["betterproto==2.0.0b7", "rustplus==6.0.9", "qrcode[pil]==7.4.2", "requests"],
+  "requirements": ["betterproto==2.0.0b7", "rustplus==6.0.10", "qrcode[pil]==7.4.2", "requests"],
   "version": "1.5.1"
 }
