@@ -1625,3 +1625,66 @@ class TestTeamChat:
         assert s.extra_state_attributes["is_command"] is False
         evs2 = {e for e, _ in fired}
         assert "rustplus_team_chat" in evs2 and "rustplus_command" not in evs2
+
+
+class TestDestroyedDetection:
+    """Coordinator destroyed-in-game detection + entity availability."""
+
+    @staticmethod
+    def _coord():
+        from custom_components.rustplus_assistant.coordinator import RustPlusDataCoordinator
+
+        # Bypass the heavy DataUpdateCoordinator.__init__ — exercise the pure logic.
+        coord = RustPlusDataCoordinator.__new__(RustPlusDataCoordinator)
+        coord.destroyed_entities = set()
+        coord._missing_counts = {}
+        coord.config_entry = SimpleNamespace(options={})
+        return coord
+
+    def test_missing_threshold_then_recovery(self):
+        coord = self._coord()
+        raised, cleared = [], []
+        coord._raise_destroyed_issue = lambda eid: raised.append(eid)
+        coord._clear_destroyed_issue = lambda eid: cleared.append(eid)
+
+        assert coord.is_destroyed(5) is False
+        coord._note_entity_missing(5)
+        assert coord.is_destroyed(5) is False and raised == []  # one miss < threshold
+        coord._note_entity_missing(5)
+        assert coord.is_destroyed(5) is True and raised == [5]  # threshold -> destroyed
+        coord._note_entity_missing(5)
+        assert raised == [5]  # no duplicate issue
+        coord._note_entity_present(5)
+        assert coord.is_destroyed(5) is False and cleared == [5]  # recovery clears
+
+    def test_present_resets_partial_misses(self):
+        coord = self._coord()
+        coord._raise_destroyed_issue = lambda eid: None
+        coord._clear_destroyed_issue = lambda eid: None
+        coord._note_entity_missing(7)   # 1 miss
+        coord._note_entity_present(7)   # responded -> reset
+        coord._note_entity_missing(7)   # 1 again, not 2
+        assert coord.is_destroyed(7) is False
+
+    def test_entity_label_from_options(self):
+        coord = self._coord()
+        coord.config_entry = SimpleNamespace(
+            options={"switches": {"5": "Front Door"}, "smart_alarms": {"9": "Raid"}}
+        )
+        assert coord._entity_label(5) == "Front Door"
+        assert coord._entity_label(9) == "Raid"
+        assert coord._entity_label(99) == "Entity 99"
+
+    def test_entity_available_reflects_destroyed(self):
+        from custom_components.rustplus_assistant.entity import RustPlusEntity
+
+        coord = _make_coordinator()
+        coord.entities_to_poll = set()
+        coord.last_update_success = True
+        coord.is_destroyed = lambda eid: eid == 12345
+
+        ent = RustPlusEntity(coord, 12345, "switch", "Door")
+        assert 12345 in coord.entities_to_poll  # registered for monitoring
+        assert ent.available is False  # destroyed -> unavailable
+        coord.is_destroyed = lambda eid: False
+        assert ent.available is True

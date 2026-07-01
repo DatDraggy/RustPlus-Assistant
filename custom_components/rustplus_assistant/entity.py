@@ -36,6 +36,10 @@ class RustPlusEntity(CoordinatorEntity[RustPlusDataCoordinator]):
         self.entity_type = entity_type
         self._attr_name = None
 
+        # Monitor every paired in-game entity so the coordinator can detect when it
+        # is destroyed in-game (get_entity_info -> not_found) and flag it.
+        coordinator.entities_to_poll.add(entity_id)
+
         server_ip = coordinator.socket.server_details.ip
         server_port = coordinator.socket.server_details.port
 
@@ -47,3 +51,8 @@ class RustPlusEntity(CoordinatorEntity[RustPlusDataCoordinator]):
             model=device_model or entity_type.replace("_", " ").title(),
             via_device=(DOMAIN, f"{server_ip}_{server_port}"),
         )
+
+    @property
+    def available(self) -> bool:
+        """Unavailable when the coordinator is down or the device was destroyed."""
+        return super().available and not self.coordinator.is_destroyed(self.rust_entity_id)

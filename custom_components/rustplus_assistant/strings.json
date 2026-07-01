@@ -103,6 +103,17 @@
     "rename_device": {
       "title": "Action Required: Rename {name}",
       "description": "You successfully paired the {type} **{name}** (ID: {id}).\n\nBy default, Facepunch only provides generic names like 'Smart Alarm' during pairing.\n\n**Please go to your Home Assistant Devices dashboard, click on this newly paired entity, and rename it to a friendly name (like 'Front Door Alarm') so you can easily identify it!**"
+    },
+    "device_destroyed": {
+      "title": "Rust+ device destroyed: {name}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Remove destroyed device?",
+            "description": "**{name}** was destroyed in-game and is no longer reachable, so its entities are unavailable.\n\nRemove it and its entities from Home Assistant? If you rebuild and re-pair it in the Rust+ app, it'll be added back automatically."
+          }
+        }
+      }
     }
   }
 }
