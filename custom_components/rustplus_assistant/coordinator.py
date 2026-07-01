@@ -14,6 +14,11 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+# Consecutive "not_found" polls before a paired entity is treated as destroyed
+# in-game (guards against a one-off transient).
+_MISSING_THRESHOLD = 2
+
+
 class RustPlusDataCoordinator(DataUpdateCoordinator):
     """Class to manage fetching Rust+ data."""
 
@@ -35,6 +40,10 @@ class RustPlusDataCoordinator(DataUpdateCoordinator):
         # after a reconnect, since the server forgets subscriptions on drop.
         self.subscribed_entities: set[int] = set()
         self._subscription_refs: dict[int, int] = {}
+        # Paired in-game entities the server reports as gone (destroyed in-game):
+        # their HA entities go unavailable and raise a Repair offering removal.
+        self.destroyed_entities: set[int] = set()
+        self._missing_counts: dict[int, int] = {}
 
     async def _connect(self) -> None:
         """Connect the data socket, keeping the blocking proxy/SSL work off the loop.
@@ -103,9 +112,21 @@ class RustPlusDataCoordinator(DataUpdateCoordinator):
             for eid in list(self.entities_to_poll):
                 try:
                     async with self.api_lock:
-                        entity_states[eid] = await self.socket.get_entity_info(eid)
+                        result = await self.socket.get_entity_info(eid)
                 except Exception as e:
+                    # A connection-level failure here is transient — don't treat it
+                    # as the device being destroyed.
                     _LOGGER.debug("Failed to get entity info for %s: %s", eid, e)
+                    continue
+                if type(result).__name__ == "RustError":
+                    reason = (getattr(result, "reason", "") or "").lower()
+                    if "not_found" in reason:
+                        # Server says this in-game entity no longer exists.
+                        self._note_entity_missing(eid)
+                    # Other RustErrors (e.g. "No response received") are transient.
+                    continue
+                entity_states[eid] = result
+                self._note_entity_present(eid)
 
             return {
                 "info": info,
@@ -158,3 +179,60 @@ class RustPlusDataCoordinator(DataUpdateCoordinator):
                     await self.socket.set_subscription_to_entity(eid, True)
             except Exception as e:
                 _LOGGER.debug("Re-subscribe failed for entity %s: %s", eid, e)
+
+    # ---- destroyed-in-game detection -------------------------------------- #
+    def is_destroyed(self, eid: int) -> bool:
+        """Whether a paired in-game entity has been destroyed (server: not_found)."""
+        return eid in self.destroyed_entities
+
+    def _note_entity_present(self, eid: int) -> None:
+        """A paired entity responded — clear any 'missing' state / Repair."""
+        self._missing_counts.pop(eid, None)
+        if eid in self.destroyed_entities:
+            self.destroyed_entities.discard(eid)
+            self._clear_destroyed_issue(eid)
+            _LOGGER.info("Rust+ entity %s is back; clearing destroyed state.", eid)
+
+    def _note_entity_missing(self, eid: int) -> None:
+        """A paired entity reported not_found — flag destroyed after a few polls."""
+        if eid in self.destroyed_entities:
+            return
+        self._missing_counts[eid] = self._missing_counts.get(eid, 0) + 1
+        if self._missing_counts[eid] >= _MISSING_THRESHOLD:
+            self.destroyed_entities.add(eid)
+            _LOGGER.info("Rust+ entity %s appears destroyed in-game; marking unavailable.", eid)
+            self._raise_destroyed_issue(eid)
+
+    def _entity_label(self, eid: int) -> str:
+        """User-facing name for a paired entity, from the config entry options."""
+        options = self.config_entry.options if self.config_entry else {}
+        for key in ("switches", "smart_alarms", "storage_monitors"):
+            name = (options.get(key) or {}).get(str(eid))
+            if name:
+                return name
+        return f"Entity {eid}"
+
+    def _raise_destroyed_issue(self, eid: int) -> None:
+        from homeassistant.helpers import issue_registry as ir
+
+        sd = self.socket.server_details
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            f"destroyed_{eid}",
+            is_fixable=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="device_destroyed",
+            translation_placeholders={"name": self._entity_label(eid)},
+            data={
+                "entity_id": eid,
+                "config_entry_id": self.config_entry.entry_id if self.config_entry else None,
+                "device_unique_id": f"{sd.ip}_{sd.port}_{eid}",
+                "name": self._entity_label(eid),
+            },
+        )
+
+    def _clear_destroyed_issue(self, eid: int) -> None:
+        from homeassistant.helpers import issue_registry as ir
+
+        ir.async_delete_issue(self.hass, DOMAIN, f"destroyed_{eid}")
