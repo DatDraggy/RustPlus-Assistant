@@ -23,6 +23,19 @@ from .coordinator import RustPlusDataCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+def _usable_entity_info(info):
+    """Return ``info`` only if it's a real entity-info payload.
+
+    During a dead-socket window a stale ``RustError`` (or None) can sit in the
+    coordinator data; touching attributes on a RustError raises (and error-logs)
+    via its ``__getattr__``, which crashed sensor updates on live. Treat anything
+    that isn't a proper payload as "no data" and keep the last value instead.
+    """
+    if not info or type(info).__name__ == "RustError":
+        return None
+    return info
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -329,8 +342,10 @@ class RustPlusStorageMonitor(RustPlusEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        info = self.coordinator.data.get("entities", {}).get(self.rust_entity_id)
-        if info:
+        info = _usable_entity_info(
+            self.coordinator.data.get("entities", {}).get(self.rust_entity_id)
+        )
+        if info is not None:
             self._update_state_from_info(info)
         super()._handle_coordinator_update()
 
@@ -355,19 +370,21 @@ class RustPlusTCMaterialSensor(RustPlusEntity, SensorEntity):
     @property
     def native_value(self):
         """Return the state of the sensor."""
-        info = self.coordinator.data.get("entities", {}).get(self.rust_entity_id)
-        if not info:
+        info = _usable_entity_info(
+            self.coordinator.data.get("entities", {}).get(self.rust_entity_id)
+        )
+        if info is None:
             return self._attr_native_value
 
         count = 0
-        for item in info.items:
+        for item in getattr(info, "items", None) or []:
             try:
                 name = translate_id_to_stack(item.item_id)
                 if name == self.material_name:
                     count += item.quantity
             except Exception:
                 pass
-        
+
         self._attr_native_value = count
         return count
 
@@ -384,10 +401,11 @@ class RustPlusTCUpkeepSensor(RustPlusEntity, SensorEntity):
     @property
     def native_value(self):
         """Return the state of the sensor."""
-        info = self.coordinator.data.get("entities", {}).get(self.rust_entity_id)
-        if not info or not getattr(info, "has_protection", False) or getattr(info, "protection_expiry", 0) == 0:
+        info = _usable_entity_info(
+            self.coordinator.data.get("entities", {}).get(self.rust_entity_id)
+        )
+        if info is None or not getattr(info, "has_protection", False) or getattr(info, "protection_expiry", 0) == 0:
             return self._attr_native_value
-
 
         duration_seconds = max(0, info.protection_expiry - int(time.time()))
 

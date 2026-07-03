@@ -65,10 +65,11 @@
   "options": {
     "step": {
       "init": {
-        "title": "Rust+ Cameras",
+        "title": "Rust+ Options",
         "menu_options": {
           "add_camera": "Add a camera",
-          "remove_camera": "Remove a camera"
+          "remove_camera": "Remove a camera",
+          "chat_settings": "Team-chat command settings"
         }
       },
       "add_camera": {
@@ -84,6 +85,13 @@
         "title": "Remove Rust+ cameras",
         "data": {
           "cameras": "Cameras to remove"
+        }
+      },
+      "chat_settings": {
+        "title": "Team-chat commands",
+        "description": "Messages in team chat starting with this prefix fire the `rustplus_command` event in Home Assistant (e.g. `!lights on`).",
+        "data": {
+          "command_prefix": "Command prefix"
         }
       }
     },

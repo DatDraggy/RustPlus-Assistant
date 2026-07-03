@@ -296,7 +296,25 @@ class RustPlusOptionsFlow(config_entries.OptionsFlow):
         menu = ["add_camera"]
         if self.config_entry.options.get("cameras"):
             menu.append("remove_camera")
+        menu.append("chat_settings")
         return self.async_show_menu(step_id="init", menu_options=menu)
+
+    async def async_step_chat_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure team-chat command handling (the `!command` prefix)."""
+        if user_input is not None:
+            new_options = dict(self.config_entry.options)
+            new_options["command_prefix"] = (user_input.get("command_prefix") or "!").strip() or "!"
+            return self.async_create_entry(title="", data=new_options)
+
+        current = self.config_entry.options.get("command_prefix", "!")
+        return self.async_show_form(
+            step_id="chat_settings",
+            data_schema=vol.Schema(
+                {vol.Required("command_prefix", default=current): str}
+            ),
+        )
 
     async def async_step_add_camera(
         self, user_input: dict[str, Any] | None = None
