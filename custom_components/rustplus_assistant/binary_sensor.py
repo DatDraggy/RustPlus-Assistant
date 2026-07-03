@@ -17,6 +17,13 @@ from .event_cadence import MAP_EVENTS, get_event_trackers
 
 _LOGGER = logging.getLogger(__name__)
 
+# NOTE on "explosive type awareness": the in-game Seismic Sensor outputs power by
+# explosive tier (3 rW = MLRS/Rocket/C4, 2 rW = Satchel/Expl. ammo/40mm/Torpedo/
+# Mortar tier, 1 rW = grenades etc.) as a SINGLE 3-second pulse. Type can therefore
+# only be distinguished in-game, by branching that wattage into up to three
+# tier-specific Smart Alarms — HA just sees each alarm fire. Do NOT try to infer
+# type from pulse patterns here; there is exactly one pulse per detonation.
+
 
 def _to_hours(value) -> float | None:
     """Convert a Rust time value ('HH:MM' or a number) to float hours."""

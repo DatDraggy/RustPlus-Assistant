@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from datetime import timedelta
@@ -28,6 +29,25 @@ _WATCHDOG_INTERVAL = timedelta(hours=1)
 # any time without signalling the client.  25 hours is conservative enough to
 # avoid false positives while still catching stale connections within a day.
 _MAX_SILENCE_SECONDS = 25 * 60 * 60  # 25 hours
+
+
+def parse_death_push(title: str, message: str, body: dict) -> tuple[str | None, str | None]:
+    """Extract (killer, server_name) from a Rust+ death push.
+
+    The ``player.death`` push body carries the killer as ``targetName`` (with
+    ``targetId`` as their steam id). Fall back to scraping "killed by <name>"
+    from the title/message so a payload variation still yields a name.
+    """
+    killer = body.get("targetName") or body.get("killerName") or body.get("killer")
+    if not killer:
+        for text in (message, title):
+            m = re.search(r"killed by (.+)", text or "", re.IGNORECASE)
+            if m:
+                killer = m.group(1).strip().rstrip(".!")
+                break
+    server = body.get("name")
+    return (killer or None), (server or None)
+
 
 class RustPlusFCMManager:
     """Manager for FCM Listener."""
@@ -160,12 +180,16 @@ class RustPlusFCMManager:
         )
 
         title = data_message.get("title") or (notification.get("title", "") if isinstance(notification, dict) else "")
-        message = data_message.get("message") or (notification.get("body", "") if isinstance(notification, dict) else "")
-        
+        raw_message = data_message.get("message") or (notification.get("body", "") if isinstance(notification, dict) else "")
+
+        message = raw_message
         if message.startswith("{"):
             message = "An event occurred on the server."
 
         channel_id = data_message.get("channelId")
+        if channel_id in ("player.death", "death"):
+            self._handle_death_push(title, raw_message, data_message)
+            return
         if channel_id == "pairing":
             body_str = data_message.get("body")
             body_data = {}
@@ -260,6 +284,60 @@ class RustPlusFCMManager:
                         },
                     )
                 )
+
+    @callback
+    def _handle_death_push(self, title: str, raw_message: str, data_message: dict) -> None:
+        """Handle a Rust+ death push (you were killed, typically while offline).
+
+        Mirrors the Rust+ app's prompt: a persistent notification naming the
+        killer, plus a ``rustplus_death`` bus event for automations. The body can
+        carry playerToken — parse it, never log it verbatim.
+        """
+        body = {}
+        body_str = data_message.get("body")
+        if body_str:
+            try:
+                body = json.loads(body_str)
+            except Exception:  # noqa: BLE001
+                pass
+
+        killer, server_name = parse_death_push(title, raw_message, body)
+        _LOGGER.debug("Death push: killer=%s server=%s", killer, server_name)
+
+        event_data = {
+            "channel_id": "player.death",
+            "title": title,
+            "killer": killer,
+            "killer_steam_id": body.get("targetId"),
+            "server_name": server_name,
+            "server_ip": body.get("ip"),
+            "server_port": body.get("port"),
+        }
+        self.hass.bus.async_fire("rustplus_death", event_data)
+        # Keep the generic feed complete for automations listening on it.
+        self.hass.bus.async_fire(
+            "rustplus_notification",
+            {"title": title, "message": f"Killed by {killer}" if killer else "You died.",
+             "channel_id": "player.death"},
+        )
+
+        where = f" on {server_name}" if server_name else ""
+        text = (
+            f"**{killer}** killed you{where}."
+            if killer
+            else f"You died{where}."
+        )
+        self.hass.async_create_task(
+            self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": "☠ Rust: you were killed",
+                    "message": text,
+                    "notification_id": "rustplus_death",
+                },
+            )
+        )
 
     async def _async_auto_discover_device(self, entity_id: str, entity_type: str, entity_name: str) -> None:
         """Attempt to auto-discover which server a device belongs to."""

@@ -1,0 +1,144 @@
+blueprint:
+  name: Rust+ Raid Alert (tiered, presence-aware)
+  description: >-
+    Tiered raid notifications for Rust+ Assistant smart alarms.
+
+    Assign your alarms to three tiers (how they're wired in-game decides what they
+    mean — e.g. "outer wall — rockets" vs "TC core — C4"):
+    **Critical** alarms always send a critical push that bypasses Do Not Disturb.
+    **High** alarms send a normal push — unless every teammate is offline, in which
+    case they escalate to critical (the offline raid is the one you must not sleep
+    through). **Low** alarms are only written to the logbook.
+
+    Optionally posts a callout into the in-game team chat so teammates without
+    their phone get instant intel.
+  domain: automation
+  input:
+    critical_alarms:
+      name: Critical alarms
+      description: Core alarms (e.g. TC / loot room). Always escalate, DND-bypassing.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: event
+            - domain: binary_sensor
+      default: []
+    high_alarms:
+      name: High alarms
+      description: Perimeter/wall alarms. Normal push; critical if nobody is online.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: event
+            - domain: binary_sensor
+      default: []
+    low_alarms:
+      name: Low alarms
+      description: Probe/trap alarms. Logbook only, no push.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: event
+            - domain: binary_sensor
+      default: []
+    notify_service:
+      name: Notify service
+      description: "Mobile app notify service to push to (e.g. notify.mobile_app_my_phone)."
+      selector:
+        text:
+      default: notify.notify
+    teammates:
+      name: Teammate sensors (optional)
+      description: >-
+        The integration's per-teammate sensors (sensor.<server>_<name>). When set,
+        a HIGH alarm escalates to critical if no teammate is online.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: sensor
+      default: []
+    send_team_chat:
+      name: Post callout to team chat
+      description: Post "⚠ <alarm> triggered!" into the in-game team chat (high/critical only).
+      selector:
+        boolean:
+      default: false
+
+mode: parallel
+max: 10
+
+triggers:
+  - trigger: state
+    entity_id: !input critical_alarms
+    id: critical
+  - trigger: state
+    entity_id: !input high_alarms
+    id: high
+  - trigger: state
+    entity_id: !input low_alarms
+    id: low
+
+variables:
+  teammates: !input teammates
+  notify_service: !input notify_service
+  send_team_chat: !input send_team_chat
+  tier: "{{ trigger.id }}"
+  alarm_name: "{{ trigger.to_state.attributes.friendly_name or trigger.entity_id }}"
+  # Teammate sensor states are alive / dead / offline — alive or dead means online.
+  team_online: >-
+    {{ teammates | map('states') | select('in', ['alive', 'dead']) | list | count > 0 }}
+  escalate: "{{ tier == 'critical' or (tier == 'high' and teammates | count > 0 and not team_online) }}"
+
+conditions:
+  # Ignore startup/unavailability churn; binary_sensor alarms count only when they
+  # turn on, while event-entity alarms fire on any (timestamp) state change.
+  - condition: template
+    value_template: >-
+      {{ trigger.from_state is not none
+         and trigger.to_state.state not in ['unknown', 'unavailable']
+         and trigger.from_state.state not in ['unknown', 'unavailable']
+         and (trigger.entity_id.split('.')[0] == 'event' or trigger.to_state.state == 'on') }}
+
+actions:
+  - action: logbook.log
+    data:
+      name: Rust+ Raid Alert
+      message: "{{ alarm_name }} triggered ({{ tier }})"
+  - choose:
+      - conditions: "{{ tier != 'low' and escalate }}"
+        sequence:
+          - action: "{{ notify_service }}"
+            data:
+              title: "🚨 RAID — {{ alarm_name }}"
+              message: >-
+                {{ alarm_name }} triggered{{ ' — nobody is online!' if not team_online and teammates | count > 0 else '!' }}
+              data:
+                # Android: bypass DND / heads-up.
+                ttl: 0
+                priority: high
+                channel: rust_raid
+                importance: high
+                # iOS: critical alert.
+                push:
+                  sound:
+                    name: default
+                    critical: 1
+                    volume: 1.0
+                  interruption-level: critical
+      - conditions: "{{ tier != 'low' }}"
+        sequence:
+          - action: "{{ notify_service }}"
+            data:
+              title: "Rust raid alarm"
+              message: "{{ alarm_name }} triggered."
+  - if:
+      - condition: template
+        value_template: "{{ send_team_chat and tier != 'low' }}"
+    then:
+      - action: rustplus_assistant.send_team_message
+        data:
+          message: "⚠ {{ alarm_name }} triggered!"

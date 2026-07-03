@@ -1688,3 +1688,56 @@ class TestDestroyedDetection:
         assert ent.available is False  # destroyed -> unavailable
         coord.is_destroyed = lambda eid: False
         assert ent.available is True
+
+
+class TestDeathPush:
+    """Death-push parsing + the offline-killed prompt (like the Rust+ app)."""
+
+    def test_parse_from_body_target_name(self):
+        from custom_components.rustplus_assistant.fcm_manager import parse_death_push
+
+        killer, server = parse_death_push(
+            "You were killed", "", {"targetName": "Bandit", "name": "TideRust"}
+        )
+        assert killer == "Bandit" and server == "TideRust"
+
+    def test_parse_regex_fallback(self):
+        from custom_components.rustplus_assistant.fcm_manager import parse_death_push
+
+        killer, _ = parse_death_push("Death", "You were killed by CamperJoe!", {})
+        assert killer == "CamperJoe"
+
+    def test_parse_nothing(self):
+        from custom_components.rustplus_assistant.fcm_manager import parse_death_push
+
+        killer, server = parse_death_push("You died", "Better luck next time", {})
+        assert killer is None and server is None
+
+    def test_handler_fires_event_and_prompt(self):
+        import json as _json
+        from custom_components.rustplus_assistant.fcm_manager import RustPlusFCMManager
+
+        mgr = RustPlusFCMManager.__new__(RustPlusFCMManager)
+        mgr.hass = _make_hass()
+        fired = []
+        mgr.hass.bus.async_fire = MagicMock(side_effect=lambda ev, data: fired.append((ev, data)))
+
+        body = _json.dumps({
+            "targetName": "Bandit", "targetId": "76561198000000001",
+            "name": "TideRust", "ip": "1.2.3.4", "port": "28015",
+            "playerToken": "SECRET",  # must never leak into events
+        })
+        mgr._handle_death_push("You were killed", "", {"body": body})
+
+        evs = dict(fired)
+        death = evs["rustplus_death"]
+        assert death["killer"] == "Bandit"
+        assert death["killer_steam_id"] == "76561198000000001"
+        assert death["server_name"] == "TideRust"
+        assert "SECRET" not in str(death)  # token not leaked
+        assert "rustplus_notification" in evs  # generic feed stays complete
+
+        # A persistent-notification prompt with the killer's name was requested.
+        call = mgr.hass.services.async_call.call_args
+        assert call.args[0] == "persistent_notification"
+        assert "Bandit" in call.args[2]["message"]
